@@ -57,9 +57,18 @@ firebase deploy --only firestore:rules,firestore:indexes
 
 ## النشر على GitHub Pages
 
-1. ارفع المستودع إلى GitHub (فرع `main`).
-2. من إعدادات المستودع: **Settings → Pages → Source: GitHub Actions**.
-3. سير العمل `deploy-pages.yml` يبني وينشر تلقائيًا مع حساب مسار القاعدة من اسم المستودع. يتطلب وضع متغيرات `.env` — أضفها كـ **Repository secrets** ومررها لخطوة البناء إن رغبت (مفاتيح Firebase عامة بطبيعتها، والحماية في Auth والقواعد).
+1. أنشئ مستودعًا عامًا باسم `student-app` (فارغًا بلا README) ثم ارفعه:
+
+   ```bash
+   git remote add origin https://github.com/<username>/student-app.git
+   git push -u origin main
+   ```
+
+2. من إعدادات المستودع: **Settings → Secrets and variables → Actions → Variables** أضف القيم الأربع:
+   `VITE_FIREBASE_API_KEY` و`VITE_FIREBASE_AUTH_DOMAIN` و`VITE_FIREBASE_PROJECT_ID` و`VITE_FIREBASE_APP_ID`.
+   بدونها يبنى الموقع ويعرض شاشة «إعداد مطلوب». (هذه القيم عامة بطبيعتها؛ الحماية في Auth والقواعد.)
+3. من إعدادات المستودع: **Settings → Pages → Source: GitHub Actions**.
+4. سير العمل `deploy-pages.yml` يبني وينشر تلقائيًا عند كل دفع إلى `main`، ويحسب مسار القاعدة من اسم المستودع (`/student-app/`). المسارات داخل التطبيق hash-based فلا تظهر أخطاء 404 عند التحديث.
 
 ## الاختبارات
 
