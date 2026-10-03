@@ -5,6 +5,8 @@ coverage/
 .env
 .env.*
 !.env.example
+# يُلتزم عمدًا لأن GitHub Actions يبني منه؛ لا يضع فيه أحد غير قيم Firebase الأربع العامة
+!.env.production
 *.local
 .firebase/
 firebase-debug.log
