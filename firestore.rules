@@ -1,0 +1,656 @@
+rules_version = '2';
+
+// قواعد Firestore — تطبيق إدارة اللجان والطلاب
+// المبدأ: الواجهة تنفّذ المنطق، والقواعد سلطة السماح النهائية.
+// كل دفعة ذرية تُربط عبر getAfter(): كتابة ناقصة تفشل كاملة.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ---------- أدوات عامة ---------- */
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function isSelf(u) { return signedIn() && uid() == u; }
+    function now() { return request.time; }
+
+    function str(v, min, max) { return v is string && v.size() >= min && v.size() <= max; }
+    function changedKeys() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function onlyChanged(keys) { return changedKeys().hasOnly(keys); }
+
+    function userDoc(u) { return get(/databases/$(database)/documents/users/$(u)).data; }
+    function userAfterDoc(u) { return getAfter(/databases/$(database)/documents/users/$(u)).data; }
+    function myUser() { return userDoc(uid()); }
+
+    function isApproved() { return signedIn() && myUser().status == 'approved'; }
+    function role() { return myUser().role; }
+    function isSuperAdmin() { return signedIn() && role() == 'superAdmin'; }
+    function isAdmin() { return signedIn() && (role() == 'admin' || role() == 'superAdmin'); }
+
+    function hasGlobal(p) {
+      return isSuperAdmin() || (isApproved() && p in myUser().globalPermissions);
+    }
+
+    function committeeDoc(c) { return get(/databases/$(database)/documents/committees/$(c)).data; }
+    function activeCommittee(c) { return committeeDoc(c).status == 'active'; }
+    function memberDoc(c) { return get(/databases/$(database)/documents/committees/$(c)/members/$(uid())).data; }
+    function memberExists(c) { return exists(/databases/$(database)/documents/committees/$(c)/members/$(uid())); }
+    function inCommittee(c) {
+      return signedIn() && isApproved() && c in myUser().committeeIds && memberExists(c);
+    }
+
+    // الترتيب: superAdmin ← المنع الفردي ← المنح الفردي ← منحة اللجنة teamWide
+    function hasCommitteePermission(c, p) {
+      return isSuperAdmin()
+        || (inCommittee(c)
+            && !(p in memberDoc(c).denies)
+            && (p in memberDoc(c).grants || p in committeeDoc(c).teamWidePermissions));
+    }
+
+    function colors() {
+      return ['emerald', 'teal', 'cyan', 'blue', 'indigo', 'violet', 'fuchsia', 'rose', 'red', 'orange', 'amber', 'lime'];
+    }
+
+    function committeePerms() {
+      return ['students.read', 'students.create', 'students.update', 'students.delete', 'students.export',
+              'requests.send', 'requests.receive', 'requests.decide', 'requests.execute',
+              'finance.read', 'finance.post', 'finance.export'];
+    }
+
+    function globalPerms() {
+      return ['users.review', 'users.managePermissions', 'committees.manage', 'templates.manage', 'backup.export'];
+    }
+
+    function requestTypes() {
+      return ['formatting', 'support', 'resources', 'inquiry',
+              'income', 'expense', 'manual_income', 'manual_expense'];
+    }
+
+    function financialRequest(d) { return d.type in ['income', 'expense', 'manual_income', 'manual_expense']; }
+    function manualRequest(d) { return d.type in ['manual_income', 'manual_expense']; }
+
+    /* ---------- الحسابات ---------- */
+
+    function validUserTransition(before, after) {
+      return (before == 'pending' && after in ['under_review', 'approved', 'rejected'])
+          || (before == 'under_review' && after in ['approved', 'rejected'])
+          || (before == 'approved' && after == 'suspended')
+          || (before == 'suspended' && after == 'approved');
+    }
+
+    // لا يمكن لأحد منح دور superAdmin عبر التطبيق؛ يبقى فقط من هو superAdmin أصلًا.
+    function validRoleAfter() {
+      return request.resource.data.role in ['member', 'admin', 'superAdmin']
+        && (request.resource.data.role == 'superAdmin' ? resource.data.role == 'superAdmin' : true);
+    }
+
+    match /users/{u} {
+      allow get: if isSelf(u) || hasGlobal('users.review');
+      allow list: if hasGlobal('users.review');
+
+      // تسجيل ذاتي لمرة واحدة + رسالة إدارة مطابقة في الدفعة نفسها
+      allow create: if isSelf(u)
+        && !exists(/databases/$(database)/documents/users/$(u))
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'phone', 'status', 'role', 'globalPermissions', 'committeeIds', 'createdAt'])
+        && request.resource.data.uid == u
+        && str(request.resource.data.name, 2, 60)
+        && request.resource.data.phone.matches('^[0-9]{10,15}$')
+        && request.resource.data.status == 'pending'
+        && request.resource.data.role == 'member'
+        && request.resource.data.globalPermissions == []
+        && request.resource.data.committeeIds == []
+        && request.resource.data.createdAt == now()
+        && getAfter(/databases/$(database)/documents/adminApprovalInbox/$(u)).data.uid == u
+        && getAfter(/databases/$(database)/documents/adminApprovalInbox/$(u)).data.status == 'open'
+        && getAfter(/databases/$(database)/documents/adminApprovalInbox/$(u)).data.createdAt == now();
+
+      allow update: if selfRenameOnly(u)
+        || superAdminUserUpdate(u)
+        || reviewerUserUpdate(u)
+        || managerUserUpdate(u);
+      allow delete: if false;
+
+      function selfRenameOnly(u) {
+        return isSelf(u)
+          && resource.data.status == 'approved'
+          && request.resource.data.status == 'approved'
+          && onlyChanged(['name'])
+          && str(request.resource.data.name, 2, 60);
+      }
+
+      function managedTargetOk(u) {
+        // getAfter وليس get: قد تكون وثيقة الهدف معدّلة بعملية أخرى في الدفعة نفسها
+        return (isSuperAdmin() || userAfterDoc(u).role != 'superAdmin') && u != uid();
+      }
+
+      function userFieldLimitsOk() {
+        return request.resource.data.globalPermissions is list
+          && request.resource.data.globalPermissions.size() <= 10
+          && request.resource.data.globalPermissions.hasOnly(globalPerms())
+          && request.resource.data.committeeIds is list
+          && request.resource.data.committeeIds.size() <= 20;
+      }
+
+      function reviewerUserUpdate(u) {
+        return hasGlobal('users.review')
+          && managedTargetOk(u)
+          && validRoleAfter()
+          && userFieldLimitsOk()
+          && validUserTransition(resource.data.status, request.resource.data.status)
+          && request.resource.data.get('reviewedBy', '') == uid()
+          && request.resource.data.get('reviewedAt', request.time) == now()
+          && (request.resource.data.status == 'approved'
+              ? changedKeys().hasOnly(['status', 'role', 'globalPermissions', 'committeeIds', 'reviewedBy', 'reviewedAt', 'name'])
+              : (changedKeys().hasOnly(['status', 'decisionReason', 'reviewedBy', 'reviewedAt', 'name'])
+                 && (request.resource.data.status in ['rejected', 'suspended']
+                     ? str(request.resource.data.get('decisionReason', ''), 3, 300)
+                     : true)));
+      }
+
+      function managerUserUpdate(u) {
+        return hasGlobal('users.managePermissions')
+          && managedTargetOk(u)
+          && resource.data.status == 'approved'
+          && request.resource.data.status == 'approved'
+          && validRoleAfter()
+          && userFieldLimitsOk()
+          && onlyChanged(['role', 'globalPermissions', 'committeeIds']);
+      }
+
+      function superAdminUserUpdate(u) {
+        return isSuperAdmin()
+          && validRoleAfter()
+          && userFieldLimitsOk()
+          && (resource.data.status == request.resource.data.status
+              || validUserTransition(resource.data.status, request.resource.data.status))
+          && request.resource.data.get('reviewedBy', '') == uid()
+          && request.resource.data.get('reviewedAt', request.time) == now()
+          && (request.resource.data.status in ['rejected', 'suspended']
+              ? str(request.resource.data.get('decisionReason', ''), 3, 300)
+              : true)
+          && changedKeys().hasOnly(['status', 'decisionReason', 'reviewedBy', 'reviewedAt', 'name',
+                                    'role', 'globalPermissions', 'committeeIds']);
+      }
+    }
+
+    /* ---------- رسالة طلب الحساب ---------- */
+
+    match /adminApprovalInbox/{u} {
+      // يقرأها أصحاب users.review فقط؛ صاحب الحساب لا يستطيع قراءتها أو تعديلها.
+      allow get, list: if hasGlobal('users.review');
+
+      allow create: if isSelf(u)
+        && getAfter(/databases/$(database)/documents/users/$(u)).data.status == 'pending'
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'phone', 'status', 'createdAt'])
+        && request.resource.data.uid == u
+        && str(request.resource.data.name, 2, 60)
+        && request.resource.data.phone.matches('^[0-9]{10,15}$')
+        && request.resource.data.status == 'open'
+        && request.resource.data.createdAt == now();
+
+      allow update: if hasGlobal('users.review')
+        && resource.data.status in ['open', 'under_review']
+        && ((request.resource.data.status == 'under_review'
+             && resource.data.status == 'open'
+             && onlyChanged(['status']))
+            || (request.resource.data.status == 'resolved'
+                && onlyChanged(['status', 'resolvedAt'])
+                && request.resource.data.resolvedAt == now()))
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.phone == resource.data.phone;
+
+      allow delete: if false;
+    }
+
+    /* ---------- الدليل العام للمستخدمين المقبولين ---------- */
+
+    match /profiles/{u} {
+      allow get, list: if isApproved();
+
+      allow create: if hasGlobal('users.review')
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'phone', 'committeeIds', 'createdAt'])
+        && request.resource.data.uid == u
+        && userAfterDoc(u).status == 'approved'
+        && str(request.resource.data.name, 2, 60)
+        && request.resource.data.committeeIds is list
+        && request.resource.data.committeeIds.size() <= 20
+        && request.resource.data.createdAt == now();
+
+      allow update: if (hasGlobal('users.managePermissions') || hasGlobal('users.review'))
+        && userAfterDoc(u).status == 'approved'
+        && changedKeys().hasOnly(['name', 'phone', 'committeeIds'])
+        && str(request.resource.data.name, 2, 60)
+        && request.resource.data.committeeIds is list;
+
+      allow delete: if isSuperAdmin();
+    }
+
+    /* ---------- اللجان ---------- */
+
+    match /committees/{c} {
+      allow get, list: if isApproved();
+
+      allow create: if hasGlobal('committees.manage')
+        && request.resource.data.keys().hasOnly(['name', 'colorKey', 'status', 'teamWidePermissions', 'createdBy', 'createdAt'])
+        && str(request.resource.data.name, 2, 60)
+        && request.resource.data.colorKey in colors()
+        && request.resource.data.status == 'active'
+        && request.resource.data.teamWidePermissions is list
+        && request.resource.data.teamWidePermissions.size() <= 12
+        && request.resource.data.teamWidePermissions.hasOnly(committeePerms())
+        && request.resource.data.createdBy == uid()
+        && request.resource.data.createdAt == now();
+
+      allow update: if hasGlobal('committees.manage')
+        && changedKeys().hasOnly(['name', 'colorKey', 'status', 'teamWidePermissions'])
+        && str(request.resource.data.name, 2, 60)
+        && request.resource.data.colorKey in colors()
+        && request.resource.data.status in ['active', 'archived']
+        && request.resource.data.teamWidePermissions is list
+        && request.resource.data.teamWidePermissions.size() <= 12
+        && request.resource.data.teamWidePermissions.hasOnly(committeePerms());
+
+      allow delete: if isSuperAdmin();
+    }
+
+    /* ---------- عضويات اللجان ---------- */
+
+    match /committees/{c}/members/{m} {
+      allow get, list: if isApproved()
+        && (inCommittee(c) || isSelf(m)
+            || hasGlobal('users.managePermissions') || hasGlobal('committees.manage'));
+
+      function memberFieldsOk() {
+        return request.resource.data.keys().hasOnly(['uid', 'role', 'grants', 'denies', 'status'])
+          && request.resource.data.uid == m
+          && request.resource.data.role in ['member', 'manager']
+          && request.resource.data.grants is list
+          && request.resource.data.grants.size() <= 12
+          && request.resource.data.grants.hasOnly(committeePerms())
+          && request.resource.data.denies is list
+          && request.resource.data.denies.size() <= 12
+          && request.resource.data.denies.hasOnly(committeePerms())
+          && request.resource.data.status == 'active';
+      }
+
+      // لا تمنح نفسك عضوية؛ والمستهدف يجب أن يظهر committeeId ضمن ملفه في الدفعة نفسها
+      function canManageMembership(m) {
+        // getAfter وليس get: يُضاف ملف المستهدف للجان في دفعة واحدة مع العضوية
+        return isApproved()
+          && (isSuperAdmin() || hasGlobal('users.managePermissions'))
+          && m != uid()
+          && (isSuperAdmin() || userAfterDoc(m).role != 'superAdmin');
+      }
+
+      allow create: if canManageMembership(m)
+        && memberFieldsOk()
+        && c in userAfterDoc(m).committeeIds;
+
+      allow update: if canManageMembership(m)
+        && onlyChanged(['role', 'grants', 'denies', 'status'])
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.role in ['member', 'manager']
+        && request.resource.data.grants is list
+        && request.resource.data.grants.size() <= 12
+        && request.resource.data.grants.hasOnly(committeePerms())
+        && request.resource.data.denies is list
+        && request.resource.data.denies.size() <= 12
+        && request.resource.data.denies.hasOnly(committeePerms())
+        && request.resource.data.status == 'active'
+        && c in userAfterDoc(m).committeeIds;
+
+      allow delete: if canManageMembership(m);
+    }
+
+    /* ---------- قالب الطلاب ---------- */
+
+    match /studentTemplates/{t} {
+      allow get, list: if isApproved();
+
+      allow create, update: if t == 'current' && hasGlobal('templates.manage')
+        && request.resource.data.keys().hasOnly(['fields', 'fieldKeys', 'requiredKeys', 'version', 'updatedAt'])
+        && request.resource.data.version is int
+        && request.resource.data.version >= 1
+        && request.resource.data.version == (exists(/databases/$(database)/documents/studentTemplates/current)
+            ? get(/databases/$(database)/documents/studentTemplates/current).data.version + 1
+            : 1)
+        && request.resource.data.fieldKeys is list
+        && request.resource.data.fieldKeys.size() >= 0
+        && request.resource.data.fieldKeys.size() <= 40
+        && request.resource.data.requiredKeys is list
+        && request.resource.data.requiredKeys.hasOnly(request.resource.data.fieldKeys)
+        && request.resource.data.fields is list
+        && request.resource.data.fields.size() <= 40
+        && request.resource.data.updatedAt == now();
+
+      allow delete: if false;
+    }
+
+    /* ---------- الطلاب ---------- */
+
+    match /students/{s} {
+      function tpl() { return get(/databases/$(database)/documents/studentTemplates/current).data; }
+
+      function validStudent(d) {
+        return d.keys().hasOnly(['committeeId', 'name', 'values', 'searchTokens', 'normalizedName',
+                                 'points', 'memorizationLevel', 'archived', 'templateVersion', 'createdAt', 'updatedAt'])
+          && str(d.name, 2, 80)
+          && str(d.normalizedName, 0, 80)
+          && d.values is map
+          && d.values.keys().hasOnly(tpl().fieldKeys)
+          && d.values.keys().hasAll(tpl().requiredKeys)
+          && d.templateVersion == tpl().version
+          && d.searchTokens is list
+          && d.searchTokens.size() <= 12
+          && d.points is int && d.points >= 0 && d.points <= 1000000
+          && d.memorizationLevel in ['none', 'beginner', 'intermediate', 'advanced', 'hafiz']
+          && d.archived is bool;
+      }
+
+      allow get, list: if isApproved()
+        && hasCommitteePermission(resource.data.committeeId, 'students.read');
+
+      allow create: if isApproved()
+        && validStudent(request.resource.data)
+        && hasCommitteePermission(request.resource.data.committeeId, 'students.create')
+        && request.resource.data.archived == false
+        && request.resource.data.createdAt == now()
+        && request.resource.data.updatedAt == now();
+
+      allow update: if isApproved()
+        && validStudent(request.resource.data)
+        && hasCommitteePermission(resource.data.committeeId, 'students.update')
+        && (isSuperAdmin() || request.resource.data.committeeId == resource.data.committeeId)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == now();
+
+      allow delete: if isSuperAdmin();
+    }
+
+    /* ---------- قواعد التوجيه ---------- */
+
+    match /routingRules/{t} {
+      allow get, list: if isApproved();
+
+      allow create, update: if hasGlobal('committees.manage')
+        && t in requestTypes()
+        && request.resource.data.keys().hasOnly(['type', 'mode', 'committeeId', 'updatedAt'])
+        && request.resource.data.type == t
+        && request.resource.data.mode in ['fixed', 'sender_choice']
+        && (request.resource.data.mode == 'fixed'
+            ? (request.resource.data.committeeId is string
+               && activeCommittee(request.resource.data.committeeId))
+            : true)
+        && request.resource.data.updatedAt == now();
+
+      allow delete: if false;
+    }
+
+    /* ---------- الطلبات ---------- */
+
+    match /requests/{r} {
+      function routingRule(t) { return get(/databases/$(database)/documents/routingRules/$(t)).data; }
+
+      function validNewRequest(d) {
+        return d.keys().hasOnly(['type', 'createdBy', 'createdByName', 'senderCommitteeId',
+                                 'destinationCommitteeId', 'title', 'body', 'amount', 'currency', 'direction',
+                                 'status', 'createdAt', 'updatedAt'])
+          && d.type in requestTypes()
+          && str(d.title, 3, 120)
+          && str(d.body, 0, 2000)
+          && d.createdBy == uid()
+          && d.createdByName == myUser().name
+          && d.status == 'submitted'
+          && d.createdAt == now() && d.updatedAt == now()
+          && activeCommittee(d.senderCommitteeId)
+          && activeCommittee(d.destinationCommitteeId)
+          && (manualRequest(d)
+              ? hasCommitteePermission(d.senderCommitteeId, 'finance.post')
+              : hasCommitteePermission(d.senderCommitteeId, 'requests.send'))
+          && (financialRequest(d)
+              ? (d.amount is int && d.amount > 0 && d.amount <= 1000000000
+                 && d.currency in ['SYP', 'USD', 'TRY']
+                 && d.direction == (d.type in ['income', 'manual_income'] ? 'income' : 'expense'))
+              : !('amount' in d) && !('currency' in d) && !('direction' in d))
+          && (manualRequest(d)
+              ? d.senderCommitteeId == d.destinationCommitteeId
+              : (routingRule(d.type).mode == 'fixed'
+                 ? d.destinationCommitteeId == routingRule(d.type).committeeId
+                 : d.destinationCommitteeId != d.senderCommitteeId));
+      }
+
+      allow get: if isApproved()
+        && (resource.data.createdBy == uid()
+            || hasCommitteePermission(resource.data.senderCommitteeId, 'requests.send')
+            || hasCommitteePermission(resource.data.destinationCommitteeId, 'requests.receive'));
+
+      allow list: if isApproved()
+        && (hasCommitteePermission(resource.data.createdBy == uid() ? resource.data.senderCommitteeId : resource.data.destinationCommitteeId, 'requests.receive')
+            || hasCommitteePermission(resource.data.senderCommitteeId, 'requests.send')
+            || resource.data.createdBy == uid());
+
+      allow create: if isApproved()
+        && validNewRequest(request.resource.data);
+
+      allow update: if isApproved()
+        && immutableRequestFieldsOk()
+        && (senderCancel() || markUnderReview() || decideRequest() || executeRequest());
+
+      allow delete: if false;
+
+      // لا يُسمح بلمس أي حقل هوية/محتوى بعد الإنشاء
+      function immutableRequestFieldsOk() {
+        return changedKeys().hasOnly(['status', 'decisionReason', 'decidedBy', 'decidedByName', 'decidedAt',
+                                      'executedBy', 'executedByName', 'executedAt', 'updatedAt']);
+      }
+
+      function senderCancel() {
+        return resource.data.createdBy == uid()
+          && resource.data.status in ['submitted', 'under_review']
+          && request.resource.data.status == 'cancelled'
+          && onlyChanged(['status', 'updatedAt']);
+      }
+
+      function decidePermOk() {
+        return manualRequest(resource.data)
+          ? hasCommitteePermission(resource.data.destinationCommitteeId, 'finance.post')
+          : hasCommitteePermission(resource.data.destinationCommitteeId, 'requests.decide');
+      }
+
+      function markUnderReview() {
+        return resource.data.status == 'submitted'
+          && request.resource.data.status == 'under_review'
+          && decidePermOk()
+          && onlyChanged(['status', 'updatedAt']);
+      }
+
+      function decideRequest() {
+        return resource.data.status in ['submitted', 'under_review']
+          && request.resource.data.status in ['approved', 'rejected']
+          && decidePermOk()
+          && str(request.resource.data.decisionReason, 3, 500)
+          && request.resource.data.decidedBy == uid()
+          && request.resource.data.decidedByName == myUser().name
+          && request.resource.data.decidedAt == now()
+          && onlyChanged(['status', 'decisionReason', 'decidedBy', 'decidedByName', 'decidedAt', 'updatedAt']);
+      }
+
+      function ledgerAfter() {
+        return getAfter(/databases/$(database)/documents/ledgerEntries/$(r)).data;
+      }
+
+      function executeRequest() {
+        return resource.data.status == 'approved'
+          && request.resource.data.status == 'executed'
+          && (financialRequest(resource.data)
+              ? hasCommitteePermission(resource.data.destinationCommitteeId, 'finance.post')
+              : hasCommitteePermission(resource.data.destinationCommitteeId, 'requests.execute'))
+          && request.resource.data.executedBy == uid()
+          && request.resource.data.executedByName == myUser().name
+          && request.resource.data.executedAt == now()
+          && onlyChanged(['status', 'executedBy', 'executedByName', 'executedAt', 'updatedAt'])
+          && (financialRequest(resource.data)
+              ? (ledgerAfter().requestId == r
+                 && ledgerAfter().committeeId == resource.data.destinationCommitteeId
+                 && ledgerAfter().type == resource.data.type
+                 && ledgerAfter().direction == resource.data.direction
+                 && ledgerAfter().amount == resource.data.amount
+                 && ledgerAfter().currency == resource.data.currency
+                 && ledgerAfter().executedBy == uid()
+                 && ledgerAfter().executedAt == now())
+              : true);
+      }
+    }
+
+    /* ---------- السجل المالي (إنشاء فقط) ---------- */
+
+    match /ledgerEntries/{r} {
+      function req() { return get(/databases/$(database)/documents/requests/$(r)).data; }
+      function reqAfter() { return getAfter(/databases/$(database)/documents/requests/$(r)).data; }
+
+      allow get, list: if isApproved()
+        && hasCommitteePermission(resource.data.committeeId, 'finance.read');
+
+      allow create: if isApproved()
+        && financialRequest(req())
+        && req().status == 'approved'
+        && reqAfter().status == 'executed'
+        && reqAfter().executedBy == uid()
+        && hasCommitteePermission(req().destinationCommitteeId, 'finance.post')
+        && request.resource.data.keys().hasOnly(['requestId', 'committeeId', 'type', 'direction', 'amount',
+                                                 'currency', 'note', 'executedBy', 'executedByName', 'executedAt', 'createdAt'])
+        && request.resource.data.requestId == r
+        && request.resource.data.committeeId == req().destinationCommitteeId
+        && request.resource.data.type == req().type
+        && request.resource.data.direction == req().direction
+        && request.resource.data.amount == req().amount
+        && request.resource.data.currency == req().currency
+        && str(request.resource.data.note, 0, 300)
+        && request.resource.data.note == reqAfter().decisionReason
+        && request.resource.data.executedBy == uid()
+        && request.resource.data.executedByName == myUser().name
+        && request.resource.data.executedAt == now()
+        && request.resource.data.createdAt == now();
+
+      allow update, delete: if false;
+    }
+
+    /* ---------- أثر أمني (إنشاء فقط) ---------- */
+
+    match /securityEvents/{e} {
+      allow get, list: if isSuperAdmin() || hasGlobal('users.review');
+
+      allow create: if isApproved()
+        && request.resource.data.keys().hasOnly(['kind', 'actorUid', 'targetId', 'detail', 'at'])
+        && request.resource.data.kind in ['finance.executed', 'user.approved', 'user.rejected', 'user.suspended',
+                                          'request.cancelled', 'student.hard_deleted', 'channel.message_hidden']
+        && request.resource.data.actorUid == uid()
+        && str(request.resource.data.targetId, 1, 150)
+        && str(request.resource.data.get('detail', ''), 0, 500)
+        && request.resource.data.at == now();
+
+      allow update, delete: if false;
+    }
+
+    /* ---------- قنوات الإعلانات والدردشة ---------- */
+
+    function channelVisible(d) {
+      return isSuperAdmin() || isAdmin()
+        || (d.audience == 'allApproved' && isApproved())
+        || (d.audience == 'committees' && isApproved() && myUser().committeeIds.hasAny(d.committeeIds));
+    }
+
+    function channelAudienceOk(d) {
+      return d.audience in ['allApproved', 'committees']
+        && d.committeeIds is list
+        && d.committeeIds.size() <= 20
+        && (d.audience == 'committees' ? d.committeeIds.size() >= 1 : true);
+    }
+
+    function canPostToChannel(d) {
+      return d.status == 'active'
+        && (d.type == 'announcements'
+            ? isAdmin()
+            : (isAdmin() || (isApproved() && myUser().committeeIds.hasAny(d.committeeIds))));
+    }
+
+    match /channels/{ch} {
+      allow get, list: if channelVisible(resource.data);
+
+      allow create: if hasGlobal('committees.manage')
+        && request.resource.data.keys().hasOnly(['name', 'type', 'audience', 'committeeIds', 'status',
+                                                 'createdBy', 'createdAt', 'lastActivityAt'])
+        && str(request.resource.data.name, 2, 60)
+        && request.resource.data.type in ['announcements', 'discussion']
+        && channelAudienceOk(request.resource.data)
+        && request.resource.data.status == 'active'
+        && request.resource.data.createdBy == uid()
+        && request.resource.data.createdAt == now()
+        && request.resource.data.lastActivityAt == now();
+
+      allow update: if channelAdminUpdate() || activityBump();
+
+      allow delete: if isSuperAdmin();
+
+      function channelAdminUpdate() {
+        return hasGlobal('committees.manage')
+          && changedKeys().hasOnly(['name', 'type', 'audience', 'committeeIds', 'status'])
+          && str(request.resource.data.name, 2, 60)
+          && request.resource.data.type in ['announcements', 'discussion']
+          && request.resource.data.status in ['active', 'archived']
+          && channelAudienceOk(request.resource.data);
+      }
+
+      function activityBump() {
+        return canPostToChannel(resource.data)
+          && onlyChanged(['lastActivityAt'])
+          && request.resource.data.lastActivityAt == now();
+      }
+    }
+
+    match /channels/{ch}/messages/{m} {
+      function ch() { return get(/databases/$(database)/documents/channels/$(ch)).data; }
+
+      allow get, list: if channelVisible(ch());
+
+      allow create: if canPostToChannel(ch())
+        && request.resource.data.keys().hasOnly(['senderId', 'senderName', 'text', 'hidden', 'createdAt'])
+        && request.resource.data.senderId == uid()
+        && request.resource.data.senderName == myUser().name
+        && str(request.resource.data.text, 1, 2000)
+        && request.resource.data.hidden == false
+        && request.resource.data.createdAt == now()
+        // bumped قناة في الدفعة نفسها (إلزامي لعرض "جديد")
+        && getAfter(/databases/$(database)/documents/channels/$(ch)).data.lastActivityAt == now();
+
+      // الإخفاء الإداري فقط؛ لا تعديل محتوى لأحد
+      allow update: if isAdmin()
+        && onlyChanged(['hidden'])
+        && request.resource.data.get('hidden', false) is bool;
+
+      allow delete: if isSuperAdmin();
+    }
+
+    /* ---------- إيصالات القراءة ---------- */
+
+    match /channelReads/{docId} {
+      allow get, list: if signedIn() && resource.data.uid == uid();
+
+      allow create, update: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid', 'channelId', 'lastReadMessageId', 'lastReadAt'])
+        && request.resource.data.uid == uid()
+        && str(request.resource.data.channelId, 1, 150)
+        && str(request.resource.data.lastReadMessageId, 0, 150)
+        && request.resource.data.lastReadAt == now();
+
+      allow delete: if false;
+    }
+
+    /* ---------- رفض كل ما عدا ذلك ---------- */
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
