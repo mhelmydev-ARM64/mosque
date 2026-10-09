@@ -44,7 +44,7 @@ function load(): AppearanceSettings {
     const parsed = JSON.parse(raw) as Partial<AppearanceSettings>;
     return {
       theme: parsed.theme === "light" || parsed.theme === "dark" || parsed.theme === "auto" ? parsed.theme : DEFAULTS.theme,
-      fontSize: parsed.fontSize === "sm" || parsed.fontSize === "lg" || parsed.fontSize === "xl" ? parsed.fontSize : DEFAULTS.fontSize,
+      fontSize: parsed.fontSize && parsed.fontSize in FONT_LABELS ? parsed.fontSize : DEFAULTS.fontSize,
       primary: parsed.primary && parsed.primary in PRIMARY_LABELS ? parsed.primary : DEFAULTS.primary,
     };
   } catch {
@@ -79,8 +79,12 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     root.setAttribute("data-theme", resolvedTheme);
     root.setAttribute("data-fontsize", settings.fontSize);
     root.setAttribute("data-primary", settings.primary);
+    // شريط المتصفح يتبع لون الثيم الحي لا قيمة مكتوبة يدويًا
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", resolvedTheme === "dark" ? "#101614" : "#0d5c3f");
+    if (meta) {
+      const chrome = getComputedStyle(root).getPropertyValue("--surface").trim();
+      if (chrome) meta.setAttribute("content", chrome);
+    }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
     } catch {

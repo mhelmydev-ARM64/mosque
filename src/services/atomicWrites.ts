@@ -1,12 +1,14 @@
 import {
   collection,
   doc,
+  deleteDoc,
   deleteField,
   getDoc,
   onSnapshot,
   runTransaction,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   writeBatch,
   type Unsubscribe,
@@ -35,6 +37,8 @@ import type {
   RoutingRule,
   Student,
   StudentTemplate,
+  TaskPriority,
+  TaskStatus,
 } from '../domain/models';
 
 export class AppError extends Error {
@@ -250,6 +254,26 @@ export async function suspendUser(targetUid: string, reason: string, actor: AppU
   await batch.commit();
 }
 
+/** إعادة حساب معلّق إلى الحالة المقبولة وحذف سبب التعليق. */
+export async function reinstateUser(targetUid: string, actor: AppUser): Promise<void> {
+  const db = requireDb();
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'users', targetUid), {
+    status: 'approved',
+    decisionReason: deleteField(),
+    reviewedBy: actor.uid,
+    reviewedAt: serverTimestamp(),
+  });
+  batch.set(doc(db, 'securityEvents', doc(collection(db, 'securityEvents')).id), {
+    kind: 'user.reinstated',
+    actorUid: actor.uid,
+    targetId: targetUid,
+    detail: 'إلغاء تعليق الحساب',
+    at: serverTimestamp(),
+  });
+  await batch.commit();
+}
+
 /** تعديل دور/صلاحيات/لجان مستخدم مقبول مع مزامنة الملف والعضويات في دفعة واحدة. */
 export async function updateUserAssignment(input: {
   targetUid: string;
@@ -258,6 +282,7 @@ export async function updateUserAssignment(input: {
   nextCommitteeIds: string[];
   memberships: Record<string, CommitteeMembership>;
   actor: AppUser;
+  reason?: string;
 }): Promise<void> {
   const db = requireDb();
   const { targetUid, role, globalPermissions, nextCommitteeIds, memberships, actor } = input;
@@ -266,6 +291,11 @@ export async function updateUserAssignment(input: {
   const added = nextCommitteeIds.filter((c) => !prev.includes(c));
   const removed = prev.filter((c) => !nextCommitteeIds.includes(c));
   if (targetUid === actor.uid) throw new AppError('SELF_EDIT', 'لا يمكنك تعديل حسابك بنفسك');
+
+  const trimmedReason = (input.reason ?? '').trim();
+  if (added.length > 0 && trimmedReason.length < 3) {
+    throw new AppError('REASON_REQUIRED', 'سبب إدخال العضو إلى لجنة جديدة مطلوب (3 أحرف على الأقل)');
+  }
 
   const batch = writeBatch(db);
   batch.update(doc(db, 'users', targetUid), { role, globalPermissions, committeeIds: nextCommitteeIds });
@@ -281,6 +311,15 @@ export async function updateUserAssignment(input: {
   }
   for (const c of removed) {
     batch.delete(doc(db, 'committees', c, 'members', targetUid));
+  }
+  if (added.length > 0) {
+    batch.set(doc(db, 'securityEvents', doc(collection(db, 'securityEvents')).id), {
+      kind: 'user.membership_updated',
+      actorUid: actor.uid,
+      targetId: targetUid,
+      detail: `${trimmedReason} (اللجان المضافة: ${added.join('، ')})`.slice(0, 300),
+      at: serverTimestamp(),
+    });
   }
   await batch.commit();
 }
@@ -427,10 +466,11 @@ export async function decideRequest(input: {
   request: RequestDoc;
   decision: 'approved' | 'rejected' | 'under_review';
   reason: string;
+  deliveryDate?: Date | null;
   actor: AppUser;
 }): Promise<void> {
   const db = requireDb();
-  const { request, decision, reason, actor } = input;
+  const { request, decision, reason, deliveryDate, actor } = input;
   if (decision === 'under_review') {
     await updateDoc(doc(db, 'requests', request.id), { status: 'under_review', updatedAt: serverTimestamp() });
     return;
@@ -440,6 +480,7 @@ export async function decideRequest(input: {
   await updateDoc(doc(db, 'requests', request.id), {
     status: decision,
     decisionReason: trimmed,
+    deliveryDate: decision === 'approved' && deliveryDate ? Timestamp.fromDate(deliveryDate) : null,
     decidedBy: actor.uid,
     decidedByName: actor.name,
     decidedAt: serverTimestamp(),
@@ -506,7 +547,7 @@ export async function executePlainRequest(request: RequestDoc, actor: AppUser): 
     updatedAt: serverTimestamp(),
   });
   batch.set(doc(db, 'securityEvents', doc(collection(db, 'securityEvents')).id), {
-    kind: 'finance.executed',
+    kind: 'request.executed',
     actorUid: actor.uid,
     targetId: request.id,
     detail: request.type,
@@ -515,7 +556,11 @@ export async function executePlainRequest(request: RequestDoc, actor: AppUser): 
   await batch.commit();
 }
 
-/** إدخال مالي يدوي: إنشاء الطلب واعتماده وتنفيذه وحركته في معاملة واحدة. */
+/**
+ * إدخال مالي يدوي: إنشاء الطلب ← اعتماده ← تنفيذه مع الحركة والأثر.
+ * ثلاث خطوات منفصلة عمدًا: قواعد Firestore تقيّم كل كتابات المعاملة الواحدة
+ * على الحالة النهائية، فلا يمكن تمرير انتقالات الحالة داخل معاملة واحدة.
+ */
 export async function manualFinanceEntry(input: {
   committeeId: string;
   type: 'manual_income' | 'manual_expense';
@@ -529,60 +574,64 @@ export async function manualFinanceEntry(input: {
   const trimmedNote = note.trim();
   if (trimmedNote.length < 3) throw new AppError('NOTE_REQUIRED', 'الوصف/السبب مطلوب (3 أحرف على الأقل)');
   if (!(Number.isInteger(amount) && amount > 0)) throw new AppError('BAD_AMOUNT', 'المبلغ عدد صحيح موجب');
+
   const reqRef = doc(collection(db, 'requests'));
-  await runTransaction(db, async (tx) => {
-    const base: Record<string, unknown> = {
-      type,
-      createdBy: actor.uid,
-      createdByName: actor.name,
-      senderCommitteeId: committeeId,
-      destinationCommitteeId: committeeId,
-      title: trimmedNote.slice(0, 120),
-      body: trimmedNote,
-      amount,
-      currency,
-      direction: type === 'manual_income' ? 'income' : 'expense',
-      status: 'submitted',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-    tx.set(reqRef, base);
-    tx.update(reqRef, {
-      status: 'approved',
-      decisionReason: trimmedNote,
-      decidedBy: actor.uid,
-      decidedByName: actor.name,
-      decidedAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    tx.update(reqRef, {
-      status: 'executed',
-      executedBy: actor.uid,
-      executedByName: actor.name,
-      executedAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    tx.set(doc(db, 'ledgerEntries', reqRef.id), {
-      requestId: reqRef.id,
-      committeeId,
-      type,
-      direction: type === 'manual_income' ? 'income' : 'expense',
-      amount,
-      currency,
-      note: trimmedNote,
-      executedBy: actor.uid,
-      executedByName: actor.name,
-      executedAt: serverTimestamp(),
-      createdAt: serverTimestamp(),
-    });
-    tx.set(doc(db, 'securityEvents', doc(collection(db, 'securityEvents')).id), {
-      kind: 'finance.executed',
-      actorUid: actor.uid,
-      targetId: reqRef.id,
-      detail: `${type} ${amount} ${currency}`,
-      at: serverTimestamp(),
-    });
+  const direction = type === 'manual_income' ? 'income' : 'expense';
+
+  await setDoc(reqRef, {
+    type,
+    createdBy: actor.uid,
+    createdByName: actor.name,
+    senderCommitteeId: committeeId,
+    destinationCommitteeId: committeeId,
+    title: trimmedNote.slice(0, 120),
+    body: trimmedNote,
+    amount,
+    currency,
+    direction,
+    status: 'submitted',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
   });
+
+  await updateDoc(reqRef, {
+    status: 'approved',
+    decisionReason: trimmedNote,
+    decidedBy: actor.uid,
+    decidedByName: actor.name,
+    decidedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  const batch = writeBatch(db);
+  batch.update(reqRef, {
+    status: 'executed',
+    executedBy: actor.uid,
+    executedByName: actor.name,
+    executedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  batch.set(doc(db, 'ledgerEntries', reqRef.id), {
+    requestId: reqRef.id,
+    committeeId,
+    type,
+    direction,
+    amount,
+    currency,
+    note: trimmedNote,
+    executedBy: actor.uid,
+    executedByName: actor.name,
+    executedAt: serverTimestamp(),
+    createdAt: serverTimestamp(),
+  });
+  batch.set(doc(db, 'securityEvents', doc(collection(db, 'securityEvents')).id), {
+    kind: 'finance.executed',
+    actorUid: actor.uid,
+    targetId: reqRef.id,
+    detail: `${type} ${amount} ${currency}`,
+    at: serverTimestamp(),
+  });
+  await batch.commit();
 }
 
 /* ---------------- قواعد التوجيه ---------------- */
@@ -675,4 +724,106 @@ export function watchChannelRead(uid: string, channelId: string, cb: (read: Chan
     (snap) => cb(snap.exists() ? (snap.data() as ChannelRead) : null),
     () => cb(null)
   );
+}
+
+/* ---------------- مهام اللجان ---------------- */
+
+export async function saveTask(input: {
+  id?: string;
+  committeeId: string;
+  title: string;
+  details: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  assigneeUid: string;
+  assigneeName: string;
+  dueDate: Date | null;
+  requestId?: string;
+  actor: AppUser;
+}): Promise<string> {
+  const db = requireDb();
+  const title = input.title.trim();
+  if (title.length < 2) throw new AppError('TITLE_REQUIRED', 'عنوان المهمة مطلوب');
+  if (title.length > 120) throw new AppError('TITLE_TOO_LONG', 'العنوان طويل (120 حرفًا كحد أقصى)');
+
+  const fields = {
+    committeeId: input.committeeId,
+    title,
+    details: input.details.trim().slice(0, 2000),
+    status: input.status,
+    priority: input.priority,
+    assigneeUid: input.assigneeUid,
+    assigneeName: input.assigneeUid ? input.assigneeName : '',
+    dueDate: input.dueDate ? Timestamp.fromDate(input.dueDate) : null,
+    requestId: input.requestId ?? '',
+    updatedAt: serverTimestamp(),
+    doneAt: input.status === 'done' ? serverTimestamp() : null,
+  };
+
+  if (input.id) {
+    await updateDoc(doc(db, 'tasks', input.id), fields);
+    return input.id;
+  }
+
+  const ref = doc(collection(db, 'tasks'));
+  await setDoc(ref, {
+    ...fields,
+    createdBy: input.actor.uid,
+    createdByName: input.actor.name,
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+/** المكلَّف بالمهمة يحرّك حالتها ويضيف ملاحظاته دون صلاحية tasks.manage. */
+export async function updateTaskProgress(input: {
+  taskId: string;
+  status: TaskStatus;
+  details: string;
+}): Promise<void> {
+  await updateDoc(doc(requireDb(), 'tasks', input.taskId), {
+    status: input.status,
+    details: input.details.trim().slice(0, 2000),
+    doneAt: input.status === 'done' ? serverTimestamp() : null,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function deleteTask(taskId: string): Promise<void> {
+  await deleteDoc(doc(requireDb(), 'tasks', taskId));
+}
+
+/* ---------------- التقارير الأسبوعية ---------------- */
+
+export async function createWeeklyReport(input: {
+  committeeId: string;
+  title: string;
+  body: string;
+  periodFrom: Date;
+  periodTo: Date;
+  actor: AppUser;
+}): Promise<string> {
+  const db = requireDb();
+  const title = input.title.trim();
+  const body = input.body.trim();
+  if (title.length < 2) throw new AppError('TITLE_REQUIRED', 'عنوان التقرير مطلوب');
+  if (title.length > 120) throw new AppError('TITLE_TOO_LONG', 'العنوان طويل (120 حرفًا كحد أقصى)');
+  if (!body) throw new AppError('BODY_REQUIRED', 'محتوى التقرير مطلوب');
+  if (body.length > 6000) throw new AppError('BODY_TOO_LONG', 'التقرير طويل (6000 حرف كحد أقصى)');
+  if (input.periodTo.getTime() < input.periodFrom.getTime()) {
+    throw new AppError('BAD_PERIOD', 'نهاية الفترة قبل بدايتها');
+  }
+
+  const ref = doc(collection(db, 'weeklyReports'));
+  await setDoc(ref, {
+    committeeId: input.committeeId,
+    title,
+    body,
+    periodFrom: Timestamp.fromDate(input.periodFrom),
+    periodTo: Timestamp.fromDate(input.periodTo),
+    createdBy: input.actor.uid,
+    createdByName: input.actor.name,
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
 }

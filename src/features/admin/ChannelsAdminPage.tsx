@@ -4,6 +4,7 @@ import { useCommittees, useVisibleChannels } from '../../services/hooks';
 import { archiveChannel, saveChannel } from '../../services/atomicWrites';
 import { Loading, EmptyState, Modal, useToast } from '../../components/ui';
 import { committeeBadgeProps } from '../../domain/colors';
+import { IconChat, IconLock, IconMegaphone, IconPlus } from '../../components/icons';
 import type { Channel } from '../../domain/models';
 
 export default function ChannelsAdminPage() {
@@ -80,18 +81,22 @@ export default function ChannelsAdminPage() {
     }
   }
 
-  if (!isAdmin) return <EmptyState icon="🔒" title="للإدارة فقط" />;
+  if (!isAdmin) return <EmptyState icon={<IconLock size={34} />} title="للإدارة فقط" />;
 
   return (
     <div className="stack">
       <div className="row">
         <h2 className="page-title flex1">القنوات ({channels.length})</h2>
-        {canManage && <button className="btn btn--primary btn--sm" onClick={openCreate}>+ قناة جديدة</button>}
+        {canManage && (
+          <button className="btn btn--primary btn--sm" onClick={openCreate}>
+            <IconPlus size={15} />قناة جديدة
+          </button>
+        )}
       </div>
 
       {loading && <Loading />}
       {error && <p className="error-text">{error}</p>}
-      {!loading && channels.length === 0 && <EmptyState icon="💬" title="لا قنوات بعد" sub="أنشئ قناة إعلانات عامة أو مجموعات دردشة للجان." />}
+      {!loading && channels.length === 0 && <EmptyState icon={<IconChat size={34} />} title="لا قنوات بعد" sub="أنشئ قناة إعلانات عامة أو مجموعات دردشة للجان." />}
 
       {channels.map((c) => (
         <div key={c.id} className="card">
@@ -138,10 +143,10 @@ export default function ChannelsAdminPage() {
               <span className="label">النوع</span>
               <div className="chips">
                 <button className={`chip ${type === 'announcements' ? 'chip--on' : ''}`} onClick={() => setType('announcements')}>
-                  📢 إعلانات (النشر للإدارة فقط)
+                  <IconMegaphone size={14} />إعلانات (النشر للإدارة فقط)
                 </button>
                 <button className={`chip ${type === 'discussion' ? 'chip--on' : ''}`} onClick={() => setType('discussion')}>
-                  💬 دردشة
+                  <IconChat size={14} />دردشة
                 </button>
               </div>
             </div>

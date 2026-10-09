@@ -4,6 +4,7 @@ import { saveRoutingRule } from '../../services/atomicWrites';
 import { Loading, EmptyState, useToast } from '../../components/ui';
 import { REQUEST_TYPES } from '../../domain/requests';
 import { committeeBadgeProps } from '../../domain/colors';
+import { IconLock } from '../../components/icons';
 import type { RequestType, RoutingRule } from '../../domain/models';
 
 export default function RoutingAdminPage() {
@@ -29,7 +30,7 @@ export default function RoutingAdminPage() {
     }
   }
 
-  if (!isAdmin) return <EmptyState icon="🔒" title="للإدارة فقط" />;
+  if (!isAdmin) return <EmptyState icon={<IconLock size={34} />} title="للإدارة فقط" />;
 
   return (
     <div className="stack">

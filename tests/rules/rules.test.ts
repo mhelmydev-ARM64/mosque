@@ -701,6 +701,80 @@ describe('التنفيذ المالي والحركة غير القابلة لل�
   });
 });
 
+describe('الإدخال المالي اليدوي', () => {
+  const NOTE = 'تبرعات اختبار';
+
+  const ledgerFields = (uid: string, reqId: string) => ({
+    requestId: reqId,
+    committeeId: 'c2',
+    type: 'manual_income',
+    direction: 'income',
+    amount: 25000,
+    currency: 'SYP',
+    note: NOTE,
+    executedBy: uid,
+    executedByName: NAME[uid],
+    executedAt: serverTimestamp(),
+    createdAt: serverTimestamp(),
+  });
+  const secFields = (uid: string, reqId: string) => ({
+    kind: 'finance.executed',
+    actorUid: uid,
+    targetId: reqId,
+    detail: 'manual_income 25000 SYP',
+    at: serverTimestamp(),
+  });
+
+  // ثلاث خطوات منفصلة كما يفعل العميل: إنشاء ← اعتماد ← تنفيذ + حركة + أثر
+  async function sequentialFlow(uid: string) {
+    const db = udb(uid);
+    const reqRef = doc(collection(db, 'requests'));
+    await setDoc(reqRef, {
+      type: 'manual_income',
+      createdBy: uid,
+      createdByName: NAME[uid],
+      senderCommitteeId: 'c2',
+      destinationCommitteeId: 'c2',
+      title: NOTE,
+      body: NOTE,
+      amount: 25000,
+      currency: 'SYP',
+      direction: 'income',
+      status: 'submitted',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    await updateDoc(reqRef, {
+      status: 'approved',
+      decisionReason: NOTE,
+      decidedBy: uid,
+      decidedByName: NAME[uid],
+      decidedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    const b = writeBatch(db);
+    b.update(reqRef, {
+      status: 'executed',
+      executedBy: uid,
+      executedByName: NAME[uid],
+      executedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    b.set(doc(db, 'ledgerEntries', reqRef.id), ledgerFields(uid, reqRef.id));
+    b.set(doc(collection(db, 'securityEvents')), secFields(uid, reqRef.id));
+    await b.commit();
+  }
+
+  it('سوبر أدمن بلا لجان يُدخل حركة مالية كاملة', async () => {
+    await assertSucceeds(sequentialFlow(ROOT));
+  });
+
+  it('عضو بلا finance.post في اللجنة لا يستطيع، وصاحبها يستطيع', async () => {
+    await assertFails(sequentialFlow(ALICE));
+    await assertSucceeds(sequentialFlow(SAMIR));
+  });
+});
+
 describe('القنوات والرسائل', () => {
   const message = (sender: string, text: string) => ({
     senderId: sender,
@@ -771,6 +845,10 @@ describe('الأثر الأمني وملفات العرض', () => {
   it('إنشاء حدث أمني بصيغة صحيحة ينجح ونوع مجهول يرفض والتعديل ممنوع', async () => {
     await assertSucceeds(setDoc(doc(udb(ALICE), 'securityEvents/e1'), {
       kind: 'request.cancelled', actorUid: ALICE, targetId: 'reqToCancel', at: serverTimestamp(),
+    }));
+    await assertSucceeds(setDoc(doc(udb(ALICE), 'securityEvents/e1b'), {
+      kind: 'user.membership_updated', actorUid: ALICE, targetId: SAMIR,
+      detail: 'نقل لمهام الدعم (اللجان المضافة: c1)', at: serverTimestamp(),
     }));
     await assertFails(setDoc(doc(udb(ALICE), 'securityEvents/e2'), {
       kind: 'hax', actorUid: ALICE, targetId: 'x', at: serverTimestamp(),

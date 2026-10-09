@@ -124,6 +124,7 @@ export interface RequestDoc {
   direction?: 'income' | 'expense' | null;
   status: RequestStatus;
   decisionReason?: string;
+  deliveryDate?: Timestamp | null;
   decidedBy?: string;
   decidedByName?: string;
   decidedAt?: Timestamp | null;
@@ -160,10 +161,13 @@ export interface LedgerEntry {
 
 export type SecurityEventKind =
   | 'finance.executed'
+  | 'request.executed'
+  | 'request.cancelled'
   | 'user.approved'
   | 'user.rejected'
   | 'user.suspended'
-  | 'request.cancelled'
+  | 'user.reinstated'
+  | 'user.membership_updated'
   | 'student.hard_deleted'
   | 'channel.message_hidden';
 
@@ -173,6 +177,39 @@ export interface SecurityEvent {
   targetId: string;
   detail?: string;
   at?: Timestamp | null;
+}
+
+export type TaskStatus = 'open' | 'in_progress' | 'done' | 'cancelled';
+export type TaskPriority = 'low' | 'normal' | 'high';
+
+export interface CommitteeTask {
+  id: string;
+  committeeId: string;
+  title: string;
+  details: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  assigneeUid: string;
+  assigneeName: string;
+  dueDate?: Timestamp | null;
+  requestId: string;
+  createdBy: string;
+  createdByName: string;
+  createdAt?: Timestamp | null;
+  updatedAt?: Timestamp | null;
+  doneAt?: Timestamp | null;
+}
+
+export interface WeeklyReport {
+  id: string;
+  committeeId: string;
+  title: string;
+  body: string;
+  periodFrom?: Timestamp | null;
+  periodTo?: Timestamp | null;
+  createdBy: string;
+  createdByName: string;
+  createdAt?: Timestamp | null;
 }
 
 export type ChannelType = 'announcements' | 'discussion';

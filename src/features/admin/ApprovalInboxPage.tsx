@@ -4,6 +4,7 @@ import { useApprovalInbox, useCommittees } from '../../services/hooks';
 import { resolveApproval, type ApprovalDecision } from '../../services/atomicWrites';
 import { Loading, EmptyState, Modal, useToast } from '../../components/ui';
 import { GLOBAL_PERMISSIONS } from '../../domain/permissions';
+import { IconCheckCircle } from '../../components/icons';
 import type { AdminApprovalMessage, GlobalRole } from '../../domain/models';
 
 export default function ApprovalInboxPage() {
@@ -61,7 +62,7 @@ export default function ApprovalInboxPage() {
       {loading && <Loading />}
       {error && <p className="error-text">{error}</p>}
       {!loading && inbox.length === 0 && (
-        <EmptyState icon="✅" title="لا طلبات حسابات معلقة" sub="ستظهر هنا رسالة فور تسجيل أي حساب جديد." />
+        <EmptyState icon={<IconCheckCircle size={34} />} title="لا طلبات حسابات معلقة" sub="ستظهر هنا رسالة فور تسجيل أي حساب جديد." />
       )}
 
       {inbox.map((m) => (

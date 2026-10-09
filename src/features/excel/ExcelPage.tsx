@@ -30,7 +30,8 @@ import type {
   StudentTemplate,
   TemplateField,
 } from "../../domain/models";
-import { EmptyState, Loading, useToast } from "../../components/ui";
+import { EmptyState, Loading, Select, useToast } from "../../components/ui";
+import { IconDatabase, IconDownload, IconUpload } from "../../components/icons";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_ROWS = 2000;
@@ -732,16 +733,20 @@ export default function ExcelPage() {
 
         {tab === "export" && (
           exportable.length === 0 ? (
-            <EmptyState icon="📤" title="لا تملك صلاحية التصدير" sub="اطلب صلاحية «تصدير الطلاب» داخل لجانك من الإدارة." />
+            <EmptyState
+              icon={<IconDownload size={34} />}
+              title="لا تملك صلاحية التصدير"
+              sub="اطلب صلاحية «تصدير الطلاب» داخل لجانك من الإدارة."
+            />
           ) : (
             <>
               <div className="field">
                 <span className="label required">اللجنة</span>
-                <select className="select" value={exportCid} onChange={(e) => setExportCid(e.target.value)}>
-                  {exportable.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
+                <Select
+                  value={exportCid}
+                  onChange={setExportCid}
+                  options={exportable.map((c) => ({ value: c.id, label: c.name }))}
+                />
               </div>
               <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                 <input type="checkbox" checked={includeArchived} onChange={(e) => setIncludeArchived(e.target.checked)} />
@@ -759,7 +764,11 @@ export default function ExcelPage() {
 
         {tab === "import" && (
           importable.length === 0 ? (
-            <EmptyState icon="📥" title="لا تملك صلاحية الاستيراد" sub="اطلب صلاحية «إضافة طالب» أو «تعديل طالب» داخل لجانك من الإدارة." />
+            <EmptyState
+              icon={<IconUpload size={34} />}
+              title="لا تملك صلاحية الاستيراد"
+              sub="اطلب صلاحية «إضافة طالب» أو «تعديل طالب» داخل لجانك من الإدارة."
+            />
           ) : (
             <>
               <div className="field">
@@ -777,35 +786,41 @@ export default function ExcelPage() {
                 <>
                   <div className="field">
                     <span className="label">ورقة العمل</span>
-                    <select
-                      className="select"
-                      value={sheetIdx}
-                      onChange={(e) => {
-                        setSheetIdx(Number(e.target.value));
+                    <Select
+                      value={String(sheetIdx)}
+                      onChange={(v) => {
+                        setSheetIdx(Number(v));
                         resetParsed();
                       }}
-                    >
-                      {wb.worksheets.map((ws, i) => (
-                        <option key={i} value={i}>{ws.name}</option>
-                      ))}
-                    </select>
+                      options={wb.worksheets.map((ws, i) => ({ value: String(i), label: ws.name }))}
+                    />
                   </div>
 
                   <div className="field">
                     <span className="label required">اللجنة الهدف</span>
-                    <select className="select" value={importCid} onChange={(e) => { setImportCid(e.target.value); setResult(null); }}>
-                      {importable.map((c) => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
-                    </select>
+                    <Select
+                      value={importCid}
+                      onChange={(v) => {
+                        setImportCid(v);
+                        setResult(null);
+                      }}
+                      options={importable.map((c) => ({ value: c.id, label: c.name }))}
+                    />
                   </div>
 
                   <div className="field">
                     <span className="label required">وضع الاستيراد</span>
-                    <select className="select" value={mode} onChange={(e) => { setMode(e.target.value as "create" | "merge"); setResult(null); }}>
-                      <option value="create">إنشاء فقط — تخطّي الأسماء الموجودة</option>
-                      <option value="merge">دمج — تحديث الموجود وإنشاء الجديد</option>
-                    </select>
+                    <Select
+                      value={mode}
+                      onChange={(v) => {
+                        setMode(v as "create" | "merge");
+                        setResult(null);
+                      }}
+                      options={[
+                        { value: "create", label: "إنشاء فقط — تخطّي الأسماء الموجودة" },
+                        { value: "merge", label: "دمج — تحديث الموجود وإنشاء الجديد" },
+                      ]}
+                    />
                   </div>
 
                   <button
@@ -830,23 +845,21 @@ export default function ExcelPage() {
                         <span className="label required">مطابقة الأعمدة</span>
                         <div className="stack" style={{ gap: 6 }}>
                           {headers.map((h, ci) => (
-                            <div key={ci} className="row" style={{ gap: 8 }}>
+                            <div key={ci} className="row row--nowrap" style={{ gap: 8 }}>
                               <span className="kv__k" style={{ minWidth: 120 }}>{h || `عمود ${ci}`}</span>
-                              <select
-                                className="select"
-                                style={{ maxWidth: 240 }}
-                                value={colMap[ci] ?? "ignore"}
-                                onChange={(e) => {
-                                  const next = { ...colMap, [ci]: e.target.value };
-                                  setColMap(next);
-                                  setResult(null);
-                                  parseSheet(next);
-                                }}
-                              >
-                                {targetOptions("name").map((o) => (
-                                  <option key={o.value} value={o.value}>{o.label}</option>
-                                ))}
-                              </select>
+                              <div className="flex1" style={{ maxWidth: 240 }}>
+                                <Select
+                                  size="sm"
+                                  value={colMap[ci] ?? "ignore"}
+                                  onChange={(v) => {
+                                    const next = { ...colMap, [ci]: v };
+                                    setColMap(next);
+                                    setResult(null);
+                                    parseSheet(next);
+                                  }}
+                                  options={targetOptions("name")}
+                                />
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -982,7 +995,11 @@ export default function ExcelPage() {
               </p>
             </>
           ) : (
-            <EmptyState icon="🗄️" title="صلاحية غير متوفرة" sub="النسخ الاحتياطي الشامل يتطلب صلاحية «النسخ الاحتياطي والتصدير الشامل»." />
+            <EmptyState
+              icon={<IconDatabase size={34} />}
+              title="صلاحية غير متوفرة"
+              sub="النسخ الاحتياطي الشامل يتطلب صلاحية «النسخ الاحتياطي والتصدير الشامل»."
+            />
           )
         )}
       </div>

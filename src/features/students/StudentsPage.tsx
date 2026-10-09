@@ -7,7 +7,14 @@ import { committeeBadgeProps } from "../../domain/colors";
 import { normalizeArabic } from "../../domain/arabic";
 import { studentMatchesFieldFilter } from "../../domain/template";
 import { MEMO_LEVELS, memoLabel } from "../../domain/requests";
-import { Loading, EmptyState } from "../../components/ui";
+import { Loading, EmptyState, Select } from "../../components/ui";
+import { IconArrowStart, IconCap, IconLock, IconPlus, IconSearch, IconX } from "../../components/icons";
+
+const ALL_LEVELS = { value: "", label: "كل المستويات" };
+const SORT_OPTIONS = [
+  { value: "name", label: "ترتيب: الاسم" },
+  { value: "points", label: "ترتيب: النقاط" },
+];
 
 export default function StudentsPage() {
   const navigate = useNavigate();
@@ -67,27 +74,38 @@ export default function StudentsPage() {
 
   return (
     <AppLayout title="الطلاب">
-      <div className="row mb-1">
-        <input
-          className="input flex1"
-          placeholder="بحث بالاسم..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          type="search"
-        />
-        <select className="select" style={{ width: "auto" }} value={sort} onChange={(e) => setSort(e.target.value as "name" | "points")}>
-          <option value="name">الاسم</option>
-          <option value="points">النقاط</option>
-        </select>
+      <div className="toolbar">
+        <div className="search-field">
+          <IconSearch size={16} />
+          <input
+            className="search-field__input"
+            type="search"
+            placeholder="ابحث بالاسم (حرفان على الأقل)..."
+            aria-label="بحث بالاسم"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {search ? (
+            <button type="button" className="search-field__clear" aria-label="مسح البحث" onClick={() => setSearch("")}>
+              <IconX size={14} />
+            </button>
+          ) : null}
+        </div>
+        <Select size="sm" value={sort} onChange={(v) => setSort(v as "name" | "points")} options={SORT_OPTIONS} />
         {canCreate ? (
           <Link to="/students/new" className="btn btn--primary btn--sm">
-            + طالب
+            <IconPlus size={16} />
+            طالب
           </Link>
         ) : null}
       </div>
 
       {readable.length === 0 ? (
-        <EmptyState icon="🔒" title="لا توجد لجان متاحة" sub="تحتاج صلاحية قراءة الطلاب في لجنة واحدة على الأقل" />
+        <EmptyState
+          icon={<IconLock size={34} />}
+          title="لا توجد لجان متاحة"
+          sub="تحتاج صلاحية قراءة الطلاب في لجنة واحدة على الأقل"
+        />
       ) : (
         <>
           <div className="row mb-1">
@@ -104,20 +122,19 @@ export default function StudentsPage() {
             ))}
           </div>
 
-          <div className="row mb-1 small">
-            <select className="select" style={{ width: "auto" }} value={memoFilter} onChange={(e) => setMemoFilter(e.target.value)}>
-              <option value="">كل المستويات</option>
-              {MEMO_LEVELS.map((m) => (
-                <option key={m.key} value={m.key}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
+          <div className="toolbar">
+            <Select
+              size="sm"
+              value={memoFilter}
+              onChange={setMemoFilter}
+              options={[ALL_LEVELS, ...MEMO_LEVELS.map((m) => ({ value: m.key, label: m.label }))]}
+            />
             <input
               className="input"
-              style={{ width: 110 }}
+              style={{ width: 118 }}
               type="number"
               placeholder="أدنى نقاط"
+              aria-label="أدنى عدد نقاط"
               value={minPoints}
               onChange={(e) => setMinPoints(e.target.value)}
             />
@@ -135,28 +152,23 @@ export default function StudentsPage() {
                   <div key={f.key} className="field mb-0">
                     <span className="label">{f.label}</span>
                     {f.type === "boolean" ? (
-                      <select
-                        className="select"
+                      <Select
+                        size="sm"
                         value={fieldFilters[f.key] ?? ""}
-                        onChange={(e) => setFieldFilters((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                      >
-                        <option value="">الكل</option>
-                        <option value="true">نعم</option>
-                        <option value="false">لا</option>
-                      </select>
+                        onChange={(v) => setFieldFilters((prev) => ({ ...prev, [f.key]: v }))}
+                        options={[
+                          { value: "", label: "الكل" },
+                          { value: "true", label: "نعم" },
+                          { value: "false", label: "لا" },
+                        ]}
+                      />
                     ) : f.options ? (
-                      <select
-                        className="select"
+                      <Select
+                        size="sm"
                         value={fieldFilters[f.key] ?? ""}
-                        onChange={(e) => setFieldFilters((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                      >
-                        <option value="">الكل</option>
-                        {f.options.map((o) => (
-                          <option key={o} value={o}>
-                            {o}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(v) => setFieldFilters((prev) => ({ ...prev, [f.key]: v }))}
+                        options={[{ value: "", label: "الكل" }, ...f.options.map((o) => ({ value: o, label: o }))]}
+                      />
                     ) : (
                       <input
                         className="input"
@@ -174,7 +186,7 @@ export default function StudentsPage() {
           {loading ? (
             <Loading />
           ) : filtered.length === 0 ? (
-            <EmptyState icon="🎓" title="لا يوجد طلاب" sub="جرّب تغيير الفلاتر أو أضف طالبًا جديدًا" />
+            <EmptyState icon={<IconCap size={34} />} title="لا يوجد طلاب" sub="جرّب تغيير الفلاتر أو أضف طالبًا جديدًا" />
           ) : (
             <div className="list">
               {filtered.map((s) => {
@@ -184,7 +196,6 @@ export default function StudentsPage() {
                     key={s.id}
                     type="button"
                     className="list-row"
-                    style={{ cursor: "pointer", width: "100%", textAlign: "start", color: "inherit", background: "var(--surface)" }}
                     onClick={() => navigate(`/students/${s.id}`)}
                   >
                     <div className="list-row__main">
@@ -194,6 +205,9 @@ export default function StudentsPage() {
                       </div>
                     </div>
                     {c ? <span {...committeeBadgeProps(c.colorKey)}>{c.name}</span> : null}
+                    <span className="list-row__end">
+                      <IconArrowStart size={17} />
+                    </span>
                   </button>
                 );
               })}

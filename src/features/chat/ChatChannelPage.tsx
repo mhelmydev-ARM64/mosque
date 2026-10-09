@@ -16,6 +16,7 @@ import { useAuth } from '../auth/AuthContext';
 import { errText, useCommittees, useProfilesIn, useVisibleChannels } from '../../services/hooks';
 import { hideMessage, markChannelRead, sendMessage } from '../../services/atomicWrites';
 import { Loading, EmptyState, useToast } from '../../components/ui';
+import { IconArrowBack, IconBan, IconSend } from '../../components/icons';
 import { committeeBadgeProps } from '../../domain/colors';
 import type { ChannelMessage } from '../../domain/models';
 
@@ -143,7 +144,7 @@ export default function ChatChannelPage() {
     return (
       <div className="stack">
         <EmptyState
-          icon="🚫"
+          icon={<IconBan size={34} />}
           title="القناة غير موجودة"
           sub="ربما حُذفت أو لا تملك صلاحية الوصول إليها."
         />
@@ -157,8 +158,10 @@ export default function ChatChannelPage() {
 
   return (
     <div className="chat-page">
-      <div className="row row--nowrap" style={{ alignItems: 'baseline' }}>
-        <Link to="/chat" className="muted" aria-label="عودة">→</Link>
+      <div className="row row--nowrap" style={{ alignItems: 'center' }}>
+        <Link to="/chat" className="icon-btn" aria-label="عودة للشات">
+          <IconArrowBack size={18} />
+        </Link>
         <div className="flex1" style={{ minWidth: 0 }}>
           <h1 className="page-title ellipsis">{channel.name}</h1>
           <div className="chips" style={{ marginTop: 2 }}>
@@ -234,8 +237,12 @@ export default function ChatChannelPage() {
             placeholder={channel.type === 'announcements' ? 'اكتب إعلانًا…' : 'اكتب رسالة…'}
             maxLength={2000}
           />
-          <button className="btn btn--primary" disabled={sending || !text.trim()}>
-            {sending ? '…' : 'إرسال'}
+          <button
+            className="btn btn--primary chat-send"
+            disabled={sending || !text.trim()}
+            aria-label="إرسال"
+          >
+            {sending ? <span className="spinner spinner--xs" /> : <IconSend size={18} />}
           </button>
         </form>
       ) : (

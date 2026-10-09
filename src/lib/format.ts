@@ -15,6 +15,12 @@ export function formatDateTime(ts: { toDate(): Date } | null | undefined): strin
 export function formatDate(ts: { toDate(): Date } | null | undefined): string {
   const d = tsToDate(ts);
   if (!d) return '—';
+  return formatPlainDate(d);
+}
+
+/** تاريخ عادي (ليس Timestamp) بالتنسيق العربي نفسه. */
+export function formatPlainDate(d: Date | null | undefined): string {
+  if (!d) return '—';
   return new Intl.DateTimeFormat('ar-SY', {
     dateStyle: 'medium',
     numberingSystem: 'latn',

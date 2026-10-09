@@ -5,6 +5,7 @@ import { saveCommittee, saveMembership } from '../../services/atomicWrites';
 import { Loading, EmptyState, Modal, useToast } from '../../components/ui';
 import { COMMITTEE_PERMISSIONS, type CommitteePermission } from '../../domain/permissions';
 import { COMMITTEE_COLORS, COLOR_LABELS, committeeBadgeProps, committeeBorderProps } from '../../domain/colors';
+import { IconCommittee, IconLock, IconPlus } from '../../components/icons';
 import type { Committee, CommitteeMembership } from '../../domain/models';
 
 export default function CommitteesAdminPage() {
@@ -70,18 +71,22 @@ export default function CommitteesAdminPage() {
     setBusy(false);
   }
 
-  if (!isAdmin) return <EmptyState icon="🔒" title="للإدارة فقط" />;
+  if (!isAdmin) return <EmptyState icon={<IconLock size={34} />} title="للإدارة فقط" />;
 
   return (
     <div className="stack">
       <div className="row">
         <h2 className="page-title flex1">اللجان ({committees.length})</h2>
-        {canManage && <button className="btn btn--primary btn--sm" onClick={openCreate}>+ لجنة جديدة</button>}
+        {canManage && (
+          <button className="btn btn--primary btn--sm" onClick={openCreate}>
+            <IconPlus size={15} />لجنة جديدة
+          </button>
+        )}
       </div>
 
       {loading && <Loading />}
       {error && <p className="error-text">{error}</p>}
-      {!loading && committees.length === 0 && <EmptyState icon="🏛️" title="لا لجان بعد" sub="أنشئ أول لجنة واختر لونها." />}
+      {!loading && committees.length === 0 && <EmptyState icon={<IconCommittee size={34} />} title="لا لجان بعد" sub="أنشئ أول لجنة واختر لونها." />}
 
       {[...committees].sort((a, b) => a.name.localeCompare(b.name, 'ar')).map((c) => (
         <div key={c.id} {...committeeBorderProps(c.colorKey)}>

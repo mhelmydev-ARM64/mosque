@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useAllUsers, useCommittees } from '../../services/hooks';
-import { suspendUser, updateUserAssignment } from '../../services/atomicWrites';
-import { Loading, EmptyState, Modal, useToast } from '../../components/ui';
+import { reinstateUser, suspendUser, updateUserAssignment } from '../../services/atomicWrites';
+import { Loading, EmptyState, ConfirmModal, Modal, useToast } from '../../components/ui';
 import { GLOBAL_PERMISSIONS } from '../../domain/permissions';
 import { USER_STATUS_LABELS } from '../../domain/requests';
 import { committeeBadgeProps } from '../../domain/colors';
+import { IconBan, IconLock, IconPencil, IconSearch, IconUndo, IconUsers, IconX } from '../../components/icons';
 import type { AppUser, CommitteeMembership, GlobalRole } from '../../domain/models';
 
 function statusTone(status: string): string {
@@ -25,12 +26,14 @@ export default function UsersAdminPage() {
   const [editing, setEditing] = useState<AppUser | null>(null);
   const [suspending, setSuspending] = useState<AppUser | null>(null);
   const [suspendReason, setSuspendReason] = useState('');
+  const [reinstating, setReinstating] = useState<AppUser | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [role, setRole] = useState<GlobalRole>('member');
   const [perms, setPerms] = useState<string[]>([]);
   const [committeeIds, setCommitteeIds] = useState<string[]>([]);
   const [memberships, setMemberships] = useState<Record<string, CommitteeMembership>>({});
+  const [reason, setReason] = useState('');
 
   const filtered = useMemo(() => {
     const needle = q.trim();
@@ -38,6 +41,8 @@ export default function UsersAdminPage() {
     if (!needle) return list;
     return list.filter((u) => u.name.includes(needle) || u.phone.includes(needle));
   }, [users, q]);
+
+  const manageable = (u: AppUser) => u.uid !== me?.uid && u.role !== 'superAdmin';
 
   function toggle<T>(list: T[], v: T): T[] {
     return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
@@ -48,8 +53,13 @@ export default function UsersAdminPage() {
     setPerms(u.globalPermissions ?? []);
     setCommitteeIds(u.committeeIds ?? []);
     setMemberships({});
+    setReason('');
     setEditing(u);
   }
+
+  const pendingAdditions = editing
+    ? committeeIds.filter((id) => !(editing.committeeIds ?? []).includes(id))
+    : [];
 
   async function saveEdit() {
     if (!editing || !me) return;
@@ -62,6 +72,7 @@ export default function UsersAdminPage() {
         nextCommitteeIds: committeeIds,
         memberships,
         actor: me,
+        reason,
       });
       toast.showSuccess('تم حفظ التعديلات');
       setEditing(null);
@@ -89,17 +100,49 @@ export default function UsersAdminPage() {
     setBusy(false);
   }
 
-  if (!isAdmin) return <EmptyState icon="🔒" title="للإدارة فقط" />;
+  async function doReinstate() {
+    if (!reinstating || !me) return;
+    setBusy(true);
+    try {
+      await reinstateUser(reinstating.uid, me);
+      toast.showSuccess('تم إلغاء التعليق وعاد الحساب مقبولًا');
+      setReinstating(null);
+    } catch (e) {
+      toast.showError((e as Error).message || 'تعذر التنفيذ');
+    }
+    setBusy(false);
+  }
+
+  if (!isAdmin) return <EmptyState icon={<IconLock size={34} />} title="للإدارة فقط" />;
 
   return (
     <div className="stack">
-      <div className="field">
-        <input className="input" placeholder="بحث بالاسم أو الهاتف…" value={q} onChange={(e) => setQ(e.target.value)} />
+      <div className="search-field">
+        <IconSearch size={16} />
+        <input
+          className="search-field__input"
+          type="search"
+          placeholder="بحث بالاسم أو الهاتف…"
+          aria-label="بحث في المستخدمين"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        {q ? (
+          <button type="button" className="search-field__clear" aria-label="مسح البحث" onClick={() => setQ('')}>
+            <IconX size={14} />
+          </button>
+        ) : null}
       </div>
 
       {loading && <Loading />}
       {error && <p className="error-text">{error}</p>}
-      {!loading && filtered.length === 0 && <EmptyState icon="👥" title="لا مستخدمين" />}
+      {!loading && filtered.length === 0 && (
+        <EmptyState
+          icon={q ? <IconSearch size={34} /> : <IconUsers size={34} />}
+          title={q ? 'لا نتائج مطابقة' : 'لا مستخدمين'}
+          sub={q ? 'جرّب اسمًا أو رقمًا آخر' : undefined}
+        />
+      )}
 
       {filtered.map((u) => (
         <div key={u.uid} className="card">
@@ -125,14 +168,27 @@ export default function UsersAdminPage() {
           {u.status === 'suspended' && u.decisionReason && (
             <div className="kv"><span className="kv__k">سبب التعليق</span><span>{u.decisionReason}</span></div>
           )}
-          <div className="row" style={{ marginTop: 8 }}>
-            {hasGlobal('users.managePermissions') && u.uid !== me?.uid && (
-              <button className="btn btn--ghost btn--sm" onClick={() => openEdit(u)}>تعديل الدور واللجان</button>
-            )}
-            {hasGlobal('users.review') && u.uid !== me?.uid && u.status === 'approved' && (
-              <button className="btn btn--danger btn--sm" onClick={() => { setSuspendReason(''); setSuspending(u); }}>تعليق</button>
-            )}
-          </div>
+          {manageable(u) ? (
+            <div className="row" style={{ marginTop: 8 }}>
+              {hasGlobal('users.managePermissions') && (
+                <button className="btn btn--ghost btn--sm" onClick={() => openEdit(u)}>
+                  <IconPencil size={15} />تعديل الدور واللجان
+                </button>
+              )}
+              {hasGlobal('users.review') && u.status === 'approved' && (
+                <button className="btn btn--danger btn--sm" disabled={busy} onClick={() => { setSuspendReason(''); setSuspending(u); }}>
+                  <IconBan size={15} />تعليق
+                </button>
+              )}
+              {hasGlobal('users.review') && u.status === 'suspended' && (
+                <button className="btn btn--ghost btn--sm" disabled={busy} onClick={() => setReinstating(u)}>
+                  <IconUndo size={15} />إلغاء التعليق
+                </button>
+              )}
+            </div>
+          ) : u.role === 'superAdmin' && u.uid !== me?.uid ? (
+            <p className="tiny faint mt-1">حساب المدير العام يُدار يدويًا من Firebase Console فقط.</p>
+          ) : null}
         </div>
       ))}
 
@@ -145,6 +201,7 @@ export default function UsersAdminPage() {
                 <button className={`chip ${role === 'member' ? 'chip--on' : ''}`} onClick={() => { setRole('member'); setPerms([]); }}>عضو</button>
                 <button className={`chip ${role === 'admin' ? 'chip--on' : ''}`} onClick={() => setRole('admin')}>مدير</button>
               </div>
+              <p className="help-text">ترقية إلى «مدير عام» تتم يدويًا من Firebase Console فقط.</p>
             </div>
 
             {role === 'admin' && (
@@ -182,11 +239,26 @@ export default function UsersAdminPage() {
               <p className="help-text">إزالة اللجنة تحذف عضويتها، والإضافة تنشئ عضوية أساسية. المنح والمنع الفردي يُدار من صفحة اللجان.</p>
             </div>
 
+            {pendingAdditions.length > 0 && (
+              <div className="field">
+                <label className="label" htmlFor="assign-reason">سبب إدخال العضو في لجنة جديدة <span className="required">*</span></label>
+                <textarea
+                  id="assign-reason"
+                  className="textarea"
+                  rows={2}
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="مثال: تكليفه بمتابعة ملف الطلاب في اللجنة"
+                />
+                <p className="help-text">يُسجَّل السبب في الأثر الأمني مع أسماء اللجان المضافة.</p>
+              </div>
+            )}
+
             <div className="row" style={{ justifyContent: 'flex-end' }}>
               <button className="btn btn--ghost" onClick={() => setEditing(null)}>إلغاء</button>
               <button
                 className="btn btn--primary"
-                disabled={busy || (role === 'admin' && perms.length === 0)}
+                disabled={busy || (role === 'admin' && perms.length === 0) || (pendingAdditions.length > 0 && reason.trim().length < 3)}
                 onClick={() => void saveEdit()}
               >
                 {busy ? 'جارٍ الحفظ…' : 'حفظ'}
@@ -194,6 +266,17 @@ export default function UsersAdminPage() {
             </div>
           </div>
         </Modal>
+      ) : null}
+
+      {reinstating ? (
+        <ConfirmModal
+          title={`إلغاء تعليق: ${reinstating.name}`}
+          message="سيعود الحساب إلى حالة «مقبول» ويستطيع الدخول والعمل من جديد."
+          confirmLabel="إلغاء التعليق"
+          busy={busy}
+          onConfirm={() => void doReinstate()}
+          onClose={() => setReinstating(null)}
+        />
       ) : null}
 
       {suspending ? (

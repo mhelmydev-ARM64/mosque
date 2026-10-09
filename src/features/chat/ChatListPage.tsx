@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useCommittees, useMyChannelReads, useVisibleChannels } from '../../services/hooks';
 import { Loading, EmptyState } from '../../components/ui';
+import { IconArrowStart, IconChat, IconMegaphone, IconSettings } from '../../components/icons';
 import { committeeBadgeProps } from '../../domain/colors';
 import type { Channel } from '../../domain/models';
 
@@ -38,12 +39,19 @@ export default function ChatListPage() {
       {loading && <Loading />}
       {error && <p className="error-text">{error}</p>}
       {!loading && !error && channels.length === 0 && (
-        <EmptyState icon="💬" title="لا توجد قنوات متاحة بعد" sub="ستظهر مجموعات الإعلانات والدردشة هنا عندما ينشئها المدير." />
+        <EmptyState
+          icon={<IconChat size={34} />}
+          title="لا توجد قنوات متاحة بعد"
+          sub="ستظهر مجموعات الإعلانات والدردشة هنا عندما ينشئها المدير."
+        />
       )}
 
       {announcements.length > 0 && (
         <section>
-          <h2 className="section-title">📢 الإعلانات</h2>
+          <h2 className="section-title section-title--accent">
+            <IconMegaphone size={15} />
+            الإعلانات
+          </h2>
           <div className="list">
             {announcements.map((ch) => (
               <Link
@@ -60,7 +68,9 @@ export default function ChatListPage() {
                     {ch.status === 'archived' ? 'معطّلة' : isAdmin ? 'تستطيع النشر' : 'للقراءة فقط'}
                   </span>
                 </div>
-                <span className="muted">‹</span>
+                <span className="list-row__end">
+                  <IconArrowStart size={17} />
+                </span>
               </Link>
             ))}
           </div>
@@ -69,7 +79,10 @@ export default function ChatListPage() {
 
       {discussions.length > 0 && (
         <section>
-          <h2 className="section-title">💬 مجموعات الدردشة</h2>
+          <h2 className="section-title">
+            <IconChat size={15} />
+            مجموعات الدردشة
+          </h2>
           <div className="list">
             {discussions.map((ch) => (
               <Link key={ch.id} to={`/chat/${ch.id}`} className="list-row">
@@ -89,7 +102,9 @@ export default function ChatListPage() {
                     })}
                   </span>
                 </div>
-                <span className="muted">‹</span>
+                <span className="list-row__end">
+                  <IconArrowStart size={17} />
+                </span>
               </Link>
             ))}
           </div>
@@ -98,6 +113,7 @@ export default function ChatListPage() {
 
       {isAdmin && (
         <Link to="/admin/channels" className="btn btn--ghost">
+          <IconSettings size={17} />
           إدارة القنوات
         </Link>
       )}

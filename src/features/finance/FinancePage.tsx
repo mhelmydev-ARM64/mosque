@@ -7,19 +7,21 @@ import { CURRENCIES, CURRENCY_LABELS, formatMoney, requestTypeInfo } from "../..
 import type { LedgerEntry } from "../../domain/models";
 import { committeeBadgeProps } from "../../domain/colors";
 import { formatDateTime } from "../../lib/format";
-import { Loading, EmptyState, useToast } from "../../components/ui";
+import { Loading, EmptyState, Select, useToast } from "../../components/ui";
+import { IconLock, IconMoney, IconPlus } from "../../components/icons";
 
 export default function FinancePage() {
   const { user, isSuperAdmin, committeePerm } = useAuth();
-  const { byId } = useCommittees();
+  const { committees, byId } = useCommittees();
 
+  const activeCommitteeIds = useMemo(() => committees.filter((c) => c.status === "active").map((c) => c.id), [committees]);
   const readCommittees = useMemo(
-    () => (user?.committeeIds ?? []).filter((cid) => isSuperAdmin || committeePerm(cid, "finance.read")),
-    [user, isSuperAdmin, committeePerm]
+    () => (isSuperAdmin ? activeCommitteeIds : (user?.committeeIds ?? []).filter((cid) => committeePerm(cid, "finance.read"))),
+    [isSuperAdmin, activeCommitteeIds, user, committeePerm]
   );
   const postCommittees = useMemo(
-    () => (user?.committeeIds ?? []).filter((cid) => isSuperAdmin || committeePerm(cid, "finance.post")),
-    [user, isSuperAdmin, committeePerm]
+    () => (isSuperAdmin ? activeCommitteeIds : (user?.committeeIds ?? []).filter((cid) => committeePerm(cid, "finance.post"))),
+    [isSuperAdmin, activeCommitteeIds, user, committeePerm]
   );
 
   const { data: entries, loading, error } = useLedgerFor(readCommittees);
@@ -53,7 +55,7 @@ export default function FinancePage() {
   if (readCommittees.length === 0) {
     return (
       <AppLayout title="السجل المالي">
-        <EmptyState icon="🔒" title="لا تملك صلاحية القراءة المالية" sub="تحتاج صلاحية finance.read في لجنة" />
+        <EmptyState icon={<IconLock size={34} />} title="لا تملك صلاحية القراءة المالية" sub="تحتاج صلاحية finance.read في لجنة" />
       </AppLayout>
     );
   }
@@ -62,19 +64,25 @@ export default function FinancePage() {
     <AppLayout title="السجل المالي">
       {postCommittees.length > 0 ? <ManualEntry postCommittees={postCommittees} /> : null}
 
-      <div className="row mb-1">
-        <select className="select" style={{ width: "auto" }} value={currencyFilter} onChange={(e) => setCurrencyFilter(e.target.value)}>
-          <option value="">كل العملات</option>
-          {CURRENCIES.map((c) => (
-            <option key={c} value={c}>{CURRENCY_LABELS[c]} ({c})</option>
-          ))}
-        </select>
-        <select className="select" style={{ width: "auto" }} value={committeeFilter} onChange={(e) => setCommitteeFilter(e.target.value)}>
-          <option value="">كل اللجان</option>
-          {readCommittees.map((cid) => (
-            <option key={cid} value={cid}>{byId.get(cid)?.name ?? cid}</option>
-          ))}
-        </select>
+      <div className="toolbar mb-1">
+        <Select
+          size="sm"
+          value={currencyFilter}
+          onChange={setCurrencyFilter}
+          options={[
+            { value: "", label: "كل العملات" },
+            ...CURRENCIES.map((c) => ({ value: c, label: `${CURRENCY_LABELS[c]} (${c})` })),
+          ]}
+        />
+        <Select
+          size="sm"
+          value={committeeFilter}
+          onChange={setCommitteeFilter}
+          options={[
+            { value: "", label: "كل اللجان" },
+            ...readCommittees.map((cid) => ({ value: cid, label: byId.get(cid)?.name ?? cid })),
+          ]}
+        />
       </div>
 
       {summary.length > 0 ? (
@@ -94,7 +102,7 @@ export default function FinancePage() {
       {loading ? (
         <Loading />
       ) : sorted.length === 0 ? (
-        <EmptyState icon="💰" title="لا توجد حركات مالية" sub="كل حركة مالية تبدأ كطلب، والإدخال اليدوي ينشئها فورًا" />
+        <EmptyState icon={<IconMoney size={34} />} title="لا توجد حركات مالية" sub="كل حركة مالية تبدأ كطلب، والإدخال اليدوي ينشئها فورًا" />
       ) : (
         <div className="list">
           {sorted.map((e) => (
@@ -164,23 +172,27 @@ function ManualEntry({ postCommittees }: { postCommittees: string[] }) {
 
   return (
     <div className="card">
-      <div className="card__title">⚡ إدخال مالي سريع</div>
+      <div className="card__title"><IconPlus size={17} />إدخال مالي سريع</div>
       <p className="tiny faint">ينشئ طلبًا معتمدًا ومنفَّذًا وحركته في خطوة واحدة — يظهر في سجل الطلبات أيضًا.</p>
       <div className="grid-2">
         <div className="field">
           <span className="label required">النوع</span>
-          <select className="select" value={type} onChange={(e) => setType(e.target.value as "manual_income" | "manual_expense")}>
-            <option value="manual_income">دخل</option>
-            <option value="manual_expense">مصروف</option>
-          </select>
+          <Select
+            value={type}
+            onChange={(v) => setType(v as "manual_income" | "manual_expense")}
+            options={[
+              { value: "manual_income", label: "دخل" },
+              { value: "manual_expense", label: "مصروف" },
+            ]}
+          />
         </div>
         <div className="field">
           <span className="label required">اللجنة</span>
-          <select className="select" value={committeeId} onChange={(e) => setCommitteeId(e.target.value)}>
-            {postCommittees.map((cid) => (
-              <option key={cid} value={cid}>{byId.get(cid)?.name ?? cid}</option>
-            ))}
-          </select>
+          <Select
+            value={committeeId}
+            onChange={setCommitteeId}
+            options={postCommittees.map((cid) => ({ value: cid, label: byId.get(cid)?.name ?? cid }))}
+          />
         </div>
         <div className="field">
           <label className="label required" htmlFor="fin-amount">المبلغ</label>
@@ -188,11 +200,11 @@ function ManualEntry({ postCommittees }: { postCommittees: string[] }) {
         </div>
         <div className="field">
           <span className="label required">العملة</span>
-          <select className="select" value={currency} onChange={(e) => setCurrency(e.target.value)}>
-            {CURRENCIES.map((c) => (
-              <option key={c} value={c}>{CURRENCY_LABELS[c]} ({c})</option>
-            ))}
-          </select>
+          <Select
+            value={currency}
+            onChange={setCurrency}
+            options={CURRENCIES.map((c) => ({ value: c, label: `${CURRENCY_LABELS[c]} (${c})` }))}
+          />
         </div>
       </div>
       <div className="field">

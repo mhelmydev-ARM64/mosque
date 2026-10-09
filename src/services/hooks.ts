@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -19,18 +19,37 @@ import type {
   ChannelRead,
   Committee,
   CommitteeMembership,
+  CommitteeTask,
   LedgerEntry,
   Profile,
   RequestDoc,
   RoutingRule,
   Student,
   StudentTemplate,
+  WeeklyReport,
 } from "../domain/models";
 
 export interface SnapshotState<T> {
   data: T;
   loading: boolean;
   error: string | null;
+}
+
+/**
+ * يؤخر فتح المستمعين خطوة واحدة كي تُلغى الاستعارات اللحظية
+ * (StrictMode في التطوير، أو التنقل السريع بين الصفحات) قبل أن تُفتح أصلًا.
+ * بلا ذلك يفتح SDK قاعدة البيانات أهدافًا ثم يزيلها فورًا، وهو نمط
+ * يوقظ خطأً داخليًا معروفًا في SDK عند العمل مع المحاكي (ca9).
+ */
+function deferredListen(open: () => () => void): () => void {
+  let cleanup: (() => void) | null = null;
+  const timer = window.setTimeout(() => {
+    cleanup = open();
+  }, 0);
+  return () => {
+    window.clearTimeout(timer);
+    if (cleanup) cleanup();
+  };
 }
 
 export function errText(e: unknown): string {
@@ -54,22 +73,135 @@ export function useCollection<T>(q: Query<T> | null): SnapshotState<T[]> {
     }
     setLoading(true);
     setError(null);
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        setData(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<T, "id">) })) as T[]);
-        setLoading(false);
-      },
-      (e) => {
-        setError(errText(e));
-        setLoading(false);
-      }
-    );
-    return unsub;
+    return deferredListen(() => {
+      const unsub = onSnapshot(
+        q,
+        (snap) => {
+          setData(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<T, "id">) })) as T[]);
+          setLoading(false);
+        },
+        (e) => {
+          setError(errText(e));
+          setLoading(false);
+        }
+      );
+      return unsub;
+    });
   }, [q]);
 
   return { data, loading, error };
 }
+
+interface ScopeSlot<T> {
+  bucket: Map<string, T>;
+  ready: boolean;
+  error: string | null;
+  timer: number | null;
+  unsub: (() => void) | null;
+}
+
+/**
+ * مستمع موزَّع يدمج عدة استعلامات على المجموعة نفسها.
+ *
+ * القاعدة الأمنية في Firestore لا تُثبت `list` إلا إذا كان قيد الاستعلام نفسه
+ * كافيًا، لذا كل استعلام هنا يحمل قيد مساواة واحدًا على حقل واحد فقط.
+ *
+ * لكل مقطع من المفتاح (`all` أو `field=value` مفصولة بـ `|`) «خانة» مستمع
+ * تُفتح مرة وتبقى عبر تغيّرات المفتاح، ولا يُغلق إلا المقاطع المُزالة فعلًا.
+ * وفتح الخانات الجديدة موزَّع بفاصل قصير بدل دفعة واحدة. السبب: إضافة أهداف
+ * وإزالتها دفعة واحدة أثناء وصول اللقطات يوقظ خطأً داخليًا معروفًا في SDK
+ * (ca9) كان يسقط الصفحات الثقيلة عند وصول أول بيانات اللجان.
+ */
+function useScopedCollection<T>(path: string, key: string): SnapshotState<T[]> {
+  const [state, setState] = useState<SnapshotState<T[]>>({ data: [], loading: !!key, error: null });
+  const slots = useRef(new Map<string, ScopeSlot<T>>());
+  const slotsPath = useRef(path);
+
+  const closeAll = useCallback(() => {
+    for (const slot of slots.current.values()) {
+      if (slot.timer !== null) window.clearTimeout(slot.timer);
+      if (slot.unsub) slot.unsub();
+    }
+    slots.current.clear();
+  }, []);
+
+  const flush = useCallback(() => {
+    const merged = new Map<string, T>();
+    let ready = true;
+    let error: string | null = null;
+    for (const slot of slots.current.values()) {
+      for (const [id, value] of slot.bucket) merged.set(id, value);
+      if (!slot.ready) ready = false;
+      if (slot.error) error = slot.error;
+    }
+    setState({ data: [...merged.values()], loading: !ready, error });
+  }, []);
+
+  useEffect(() => {
+    if (!firebaseReady || !db) {
+      closeAll();
+      setState({ data: [], loading: false, error: null });
+      return;
+    }
+    if (slotsPath.current !== path) {
+      closeAll();
+      slotsPath.current = path;
+    }
+    const want = new Set(key ? key.split("|").filter(Boolean) : []);
+    if (want.size === 0) {
+      closeAll();
+      setState({ data: [], loading: false, error: null });
+      return;
+    }
+
+    for (const [spec, slot] of slots.current) {
+      if (want.has(spec)) continue;
+      if (slot.timer !== null) window.clearTimeout(slot.timer);
+      if (slot.unsub) slot.unsub();
+      slots.current.delete(spec);
+    }
+
+    let i = 0;
+    for (const spec of want) {
+      if (slots.current.has(spec)) continue;
+      const slot: ScopeSlot<T> = { bucket: new Map(), ready: false, error: null, timer: null, unsub: null };
+      slots.current.set(spec, slot);
+      slot.timer = window.setTimeout(() => {
+        slot.timer = null;
+        if (slots.current.get(spec) !== slot) return;
+        const sep = spec.indexOf("=");
+        const q =
+          sep === -1
+            ? (typedRef<T>(path) as Query<T>)
+            : query(typedRef<T>(path), where(spec.slice(0, sep), "==", spec.slice(sep + 1)));
+        slot.unsub = onSnapshot(
+          q,
+          (snap) => {
+            slot.bucket = new Map(
+              snap.docs.map((d) => [d.id, { id: d.id, ...(d.data() as Omit<T, "id">) } as T])
+            );
+            slot.ready = true;
+            slot.error = null;
+            flush();
+          },
+          (e) => {
+            slot.ready = true;
+            slot.error = errText(e);
+            flush();
+          }
+        );
+      }, i * 25);
+      i += 1;
+    }
+    flush();
+  }, [path, key, closeAll, flush]);
+
+  useEffect(() => () => closeAll(), [closeAll]);
+
+  return state;
+}
+
+const sortedKey = (parts: string[]) => [...new Set(parts.filter(Boolean))].sort().join("|");
 
 export function useDocument<T>(ref: DocumentReference<T> | null): SnapshotState<T | null> {
   const [data, setData] = useState<T | null>(null);
@@ -84,18 +216,20 @@ export function useDocument<T>(ref: DocumentReference<T> | null): SnapshotState<
     }
     setLoading(true);
     setError(null);
-    const unsub = onSnapshot(
-      ref,
-      (snap) => {
-        setData(snap.exists() ? ({ id: snap.id, ...(snap.data() as Omit<T, "id">) } as T) : null);
-        setLoading(false);
-      },
-      (e) => {
-        setError(errText(e));
-        setLoading(false);
-      }
-    );
-    return unsub;
+    return deferredListen(() => {
+      const unsub = onSnapshot(
+        ref,
+        (snap) => {
+          setData(snap.exists() ? ({ id: snap.id, ...(snap.data() as Omit<T, "id">) } as T) : null);
+          setLoading(false);
+        },
+        (e) => {
+          setError(errText(e));
+          setLoading(false);
+        }
+      );
+      return unsub;
+    });
   }, [ref]);
 
   return { data, loading, error };
@@ -169,18 +303,20 @@ export function useVisibleChannels(user: AppUser | null) {
       }
     }
     setState((s) => ({ ...s, loading: true, error: null }));
-    const merged = new Map<string, Channel>();
-    const unsubs = queries.map((q) =>
-      onSnapshot(
-        q,
-        (snap) => {
-          for (const d of snap.docs) merged.set(d.id, { id: d.id, ...(d.data() as Omit<Channel, 'id'>) });
-          setState({ data: [...merged.values()], loading: false, error: null });
-        },
-        (e) => setState((s2) => ({ ...s2, loading: false, error: errText(e) }))
-      )
-    );
-    return () => unsubs.forEach((u) => u());
+    return deferredListen(() => {
+      const merged = new Map<string, Channel>();
+      const unsubs = queries.map((q) =>
+        onSnapshot(
+          q,
+          (snap) => {
+            for (const d of snap.docs) merged.set(d.id, { id: d.id, ...(d.data() as Omit<Channel, 'id'>) });
+            setState({ data: [...merged.values()], loading: false, error: null });
+          },
+          (e) => setState((s2) => ({ ...s2, loading: false, error: errText(e) }))
+        )
+      );
+      return () => unsubs.forEach((u) => u());
+    });
   }, [uid, status, cidKey, isAdmin]);
 
   return state;
@@ -219,12 +355,14 @@ export function useProfilesIn(committeeIds: string[]) {
       return;
     }
     const ids = key.split(",");
-    const unsub = onSnapshot(
-      query(typedRef<Profile>("profiles"), where("committeeIds", "array-contains-any", ids)),
-      (snap) => setState({ data: snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Profile, "id">) })), loading: false, error: null }),
-      (e) => setState({ data: [], loading: false, error: errText(e) })
-    );
-    return unsub;
+    return deferredListen(() => {
+      const unsub = onSnapshot(
+        query(typedRef<Profile>("profiles"), where("committeeIds", "array-contains-any", ids)),
+        (snap) => setState({ data: snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Profile, "id">) })), loading: false, error: null }),
+        (e) => setState({ data: [], loading: false, error: errText(e) })
+      );
+      return unsub;
+    });
   }, [key]);
 
   return state;
@@ -254,12 +392,32 @@ export function useStudentsFor(
       where("archived", "==", archived),
       ...(namePrefix ? [where("normalizedName", ">=", namePrefix), where("normalizedName", "<", namePrefix + "\uf8ff")] : []),
     ];
+    // نطاق على normalizedName يمنع الترتيب بحقل آخر، وإلا رفض Firestore الاستعلام
+    const byPoints = orderByField === "points" && !namePrefix;
     return query(
       typedRef<Student>("students"),
       ...parts,
-      ...(orderByField === "points" ? [orderBy("points", "desc")] : [orderBy("normalizedName", "asc")])
+      ...(byPoints ? [orderBy("points", "desc")] : [orderBy("normalizedName", "asc")])
     );
   }, [committeeId, archived, namePrefix, orderByField]);
+  return useCollection<Student>(q);
+}
+
+/**
+ * دليل الطلاب العام — لكل من يملك students.oversight.
+ * الاستعلام بلا قيد لجنة لأن القاعدة تثبته من المنحة العالمية وحدها.
+ */
+export function useAllStudents(archived: boolean, namePrefix: string | null, orderByField: "name" | "points" = "name") {
+  const q = useMemo(() => {
+    if (!firebaseReady || !db) return null;
+    const byPoints = orderByField === "points" && !namePrefix;
+    return query(
+      typedRef<Student>("students"),
+      where("archived", "==", archived),
+      ...(namePrefix ? [where("normalizedName", ">=", namePrefix), where("normalizedName", "<", namePrefix + "\uf8ff")] : []),
+      ...(byPoints ? [orderBy("points", "desc")] : [orderBy("normalizedName", "asc")])
+    );
+  }, [archived, namePrefix, orderByField]);
   return useCollection<Student>(q);
 }
 
@@ -275,59 +433,80 @@ export function useLedgerFor(committeeIds: string[]) {
       return;
     }
     setState((s) => ({ ...s, loading: true, error: null }));
-    const merged = new Map<string, LedgerEntry>();
-    const unsubs = ids.map((cid) =>
-      onSnapshot(
-        query(typedRef<LedgerEntry>("ledgerEntries"), where("committeeId", "==", cid)),
-        (snap) => {
-          for (const d of snap.docs) merged.set(d.id, { id: d.id, ...(d.data() as Omit<LedgerEntry, "id">) });
-          setState({ data: [...merged.values()], loading: false, error: null });
-        },
-        (e) => setState({ data: [...merged.values()], loading: false, error: errText(e) })
-      )
-    );
-    return () => unsubs.forEach((u) => u());
+    return deferredListen(() => {
+      const merged = new Map<string, LedgerEntry>();
+      const unsubs = ids.map((cid) =>
+        onSnapshot(
+          query(typedRef<LedgerEntry>("ledgerEntries"), where("committeeId", "==", cid)),
+          (snap) => {
+            for (const d of snap.docs) merged.set(d.id, { id: d.id, ...(d.data() as Omit<LedgerEntry, "id">) });
+            setState({ data: [...merged.values()], loading: false, error: null });
+          },
+          (e) => setState({ data: [...merged.values()], loading: false, error: errText(e) })
+        )
+      );
+      return () => unsubs.forEach((u) => u());
+    });
   }, [ids]);
 
   return state;
 }
 
-export function useRequestsFor(committeeIds: string[], createdBy: string | null) {
-  const key = useMemo(() => (createdBy ? `u:${createdBy}` : [...committeeIds].sort().join(",")), [committeeIds, createdBy]);
-  const ids = useMemo(() => (key.startsWith("u:") ? [] : key.split(",")), [key]);
-  const [state, setState] = useState<SnapshotState<RequestDoc[]>>({ data: [], loading: true, error: null });
+export interface RequestScope {
+  /** لجان يستقبل فيها المستخدم الطلبات (requests.receive أو finance.read). */
+  receiveCommittees?: string[];
+  /** لجان يرسل منها المستخدم الطلبات (requests.send أو finance.read). */
+  sendCommittees?: string[];
+  /** طلبات أنشأها المستخدم نفسه. */
+  createdBy?: string | null;
+  /** صاحب requests.oversight يرى كل الطلبات باستعلام واحد بلا قيود. */
+  all?: boolean;
+}
 
-  useEffect(() => {
-    if (!firebaseReady || !db) return;
-    if (createdBy) {
-      setState((s) => ({ ...s, loading: true, error: null }));
-      const unsub = onSnapshot(
-        query(typedRef<RequestDoc>("requests"), where("createdBy", "==", createdBy)),
-        (snap) => setState({ data: snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<RequestDoc, "id">) })), loading: false, error: null }),
-        (e) => setState({ data: [], loading: false, error: errText(e) })
-      );
-      return unsub;
-    }
-    if (ids.length === 0) {
-      setState({ data: [], loading: false, error: null });
-      return;
-    }
-    setState((s) => ({ ...s, loading: true, error: null }));
-    const merged = new Map<string, RequestDoc>();
-    const unsubs = ids.map((cid) =>
-      onSnapshot(
-        query(typedRef<RequestDoc>("requests"), where("destinationCommitteeId", "==", cid)),
-        (snap) => {
-          for (const d of snap.docs) merged.set(d.id, { id: d.id, ...(d.data() as Omit<RequestDoc, "id">) });
-          setState({ data: [...merged.values()], loading: false, error: null });
-        },
-        (e) => setState({ data: [...merged.values()], loading: false, error: errText(e) })
-      )
-    );
-    return () => unsubs.forEach((u) => u());
-  }, [ids, createdBy, key]);
+/**
+ * الطلبات المرئية للمستخدم حسب الجهات الثلاث في القواعد:
+ * المستلمة، المرسلة، والإدارة. كل جهة استعلام مستقل بقيد واحد.
+ */
+export function useRequests(scope: RequestScope) {
+  const { receiveCommittees = [], sendCommittees = [], createdBy = null, all = false } = scope;
+  const recvKey = useMemo(() => sortedKey(receiveCommittees), [receiveCommittees]);
+  const sendKey = useMemo(() => sortedKey(sendCommittees), [sendCommittees]);
+  const key = useMemo(() => {
+    if (all) return "all";
+    const parts = [
+      ...recvKey.split("|").filter(Boolean).map((c) => `destinationCommitteeId=${c}`),
+      ...sendKey.split("|").filter(Boolean).map((c) => `senderCommitteeId=${c}`),
+      ...(createdBy ? [`createdBy=${createdBy}`] : []),
+    ];
+    return sortedKey(parts);
+  }, [all, recvKey, sendKey, createdBy]);
 
-  return state;
+  return useScopedCollection<RequestDoc>("requests", key);
+}
+
+/** مهام لجنة (أو كل اللجان لصاحب requests.oversight). */
+export function useTasks(committeeIds: string[], all = false) {
+  const idsKey = useMemo(() => sortedKey(committeeIds), [committeeIds]);
+  const key = useMemo(
+    () => (all ? "all" : sortedKey(idsKey.split("|").filter(Boolean).map((c) => `committeeId=${c}`))),
+    [all, idsKey]
+  );
+  return useScopedCollection<CommitteeTask>("tasks", key);
+}
+
+/** مهامي أنا كمكلَّف بها، في كل اللجان. */
+export function useMyTasks(uid: string | null) {
+  return useScopedCollection<CommitteeTask>("tasks", uid ? `assigneeUid=${uid}` : "");
+}
+
+/** التقارير الأسبوعية للجنة (أو كلها للإدارة). */
+export function useWeeklyReports(committeeIds: string[], all = false) {
+  const idsKey = useMemo(() => sortedKey(committeeIds), [committeeIds]);
+  const key = useMemo(
+    () => (all ? "all" : sortedKey(idsKey.split("|").filter(Boolean).map((c) => `committeeId=${c}`))),
+    [all, idsKey]
+  );
+  return useScopedCollection<WeeklyReport>("weeklyReports", key);
 }
 
 export function useUserDoc(uid: string | null) {

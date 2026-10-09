@@ -4,8 +4,10 @@ import type { ReactNode } from "react";
 import { firebaseReady } from "../lib/firebase";
 import { useAuth } from "../features/auth/AuthContext";
 import { AuthProvider } from "../features/auth/AuthContext";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { AppearanceProvider } from "./theme/ThemeProvider";
 import { ToastProvider, Loading, EmptyState } from "../components/ui";
+import { IconSettings } from "../components/icons";
 import { LoginPage } from "../features/auth/LoginPage";
 import { RegisterPage } from "../features/auth/RegisterPage";
 import { AccountStatusPage } from "../features/auth/AccountStatusPage";
@@ -27,12 +29,16 @@ const CommitteesAdminPage = lazy(() => import("../features/admin/CommitteesAdmin
 const TemplateEditorPage = lazy(() => import("../features/admin/TemplateEditorPage"));
 const RoutingAdminPage = lazy(() => import("../features/admin/RoutingAdminPage"));
 const ChannelsAdminPage = lazy(() => import("../features/admin/ChannelsAdminPage"));
+const TasksAdminPage = lazy(() => import("../features/admin/TasksAdminPage"));
+const StudentDirectoryPage = lazy(() => import("../features/admin/StudentDirectoryPage"));
 
 function SetupRequired() {
   return (
     <div className="auth-wrap">
       <div className="auth-card card" style={{ boxShadow: "var(--shadow)" }}>
-        <div className="auth-logo">⚙️</div>
+        <div className="auth-logo">
+          <IconSettings size={34} />
+        </div>
         <h1 className="auth-title">إعداد مطلوب</h1>
         <p className="muted small">
           لم يتم ضبط إعدادات Firebase بعد. أنشئ ملف <code>.env</code> من <code>.env.example</code> وأدخل مفاتيح مشروعك، ثم أعد تشغيل التطبيق. التفاصيل في README.
@@ -88,10 +94,11 @@ function Page({ children }: { children: ReactNode }) {
 
 export function AppRouter() {
   return (
-    <AppearanceProvider>
-      <ToastProvider>
-        <AuthProvider>
-          <HashRouter>
+    <ErrorBoundary>
+      <AppearanceProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <HashRouter>
             <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route path="/register" element={<RegisterPage />} />
@@ -211,16 +218,15 @@ export function AppRouter() {
                                   <Route path="template" element={<TemplateEditorPage />} />
                                   <Route path="routing" element={<RoutingAdminPage />} />
                                   <Route path="channels" element={<ChannelsAdminPage />} />
-                                  <Route
-                                    path="*"
-                                    element={<EmptyState icon="🧭" title="الصفحة غير موجودة" />}
-                                  />
+                                  <Route path="tasks" element={<TasksAdminPage />} />
+                                  <Route path="directory" element={<StudentDirectoryPage />} />
+                                  <Route path="*" element={<EmptyState title="الصفحة غير موجودة" />} />
                                 </Routes>
                               </AdminLayout>
                             </Page>
                           }
                         />
-                        <Route path="*" element={<EmptyState icon="🧭" title="الصفحة غير موجودة" />} />
+                        <Route path="*" element={<EmptyState title="الصفحة غير موجودة" />} />
                       </Routes>
                     </RequireApproved>
                   </RequireAuth>
@@ -230,6 +236,7 @@ export function AppRouter() {
           </HashRouter>
         </AuthProvider>
       </ToastProvider>
-    </AppearanceProvider>
+      </AppearanceProvider>
+    </ErrorBoundary>
   );
 }

@@ -54,12 +54,17 @@ service cloud.firestore {
     function committeePerms() {
       return ['students.read', 'students.create', 'students.update', 'students.delete', 'students.export',
               'requests.send', 'requests.receive', 'requests.decide', 'requests.execute',
-              'finance.read', 'finance.post', 'finance.export'];
+              'finance.read', 'finance.post', 'finance.approve', 'finance.export',
+              'tasks.manage', 'reports.write'];
     }
 
     function globalPerms() {
-      return ['users.review', 'users.managePermissions', 'committees.manage', 'templates.manage', 'backup.export'];
+      return ['users.review', 'users.managePermissions', 'committees.manage', 'templates.manage',
+              'backup.export', 'requests.oversight', 'students.oversight'];
     }
+
+    function taskStatuses() { return ['open', 'in_progress', 'done', 'cancelled']; }
+    function taskPriorities() { return ['low', 'normal', 'high']; }
 
     function requestTypes() {
       return ['formatting', 'support', 'resources', 'inquiry',
@@ -79,9 +84,19 @@ service cloud.firestore {
     }
 
     // لا يمكن لأحد منح دور superAdmin عبر التطبيق؛ يبقى فقط من هو superAdmin أصلًا.
+    // ولا يمكن لغير superAdmin إنزال حامل الدور عنه: نفحص الحالة قبل الكتابة (resource.data)
+    // لأن getAfter() يقرأ نتيجة الدفعة نفسها فيمرّر الإنزال.
     function validRoleAfter() {
       return request.resource.data.role in ['member', 'admin', 'superAdmin']
-        && (request.resource.data.role == 'superAdmin' ? resource.data.role == 'superAdmin' : true);
+        && (request.resource.data.role == 'superAdmin' ? resource.data.role == 'superAdmin' : true)
+        && (resource.data.role == 'superAdmin' ? isSuperAdmin() : true);
+    }
+
+    // الهدف نفسه يجب ألا يكون superAdmin قبل الكتابة ولا بعدها.
+    function targetNotSuperAdmin(u) {
+      return isSuperAdmin()
+        || (get(/databases/$(database)/documents/users/$(u)).data.role != 'superAdmin'
+            && userAfterDoc(u).role != 'superAdmin');
     }
 
     match /users/{u} {
@@ -119,8 +134,8 @@ service cloud.firestore {
       }
 
       function managedTargetOk(u) {
-        // getAfter وليس get: قد تكون وثيقة الهدف معدّلة بعملية أخرى في الدفعة نفسها
-        return (isSuperAdmin() || userAfterDoc(u).role != 'superAdmin') && u != uid();
+        // قبل الكتابة وبعدها: لا يمرّر إنزال superAdmin ولا رفعه ضمن الدفعة نفسها
+        return targetNotSuperAdmin(u) && u != uid();
       }
 
       function userFieldLimitsOk() {
@@ -140,7 +155,7 @@ service cloud.firestore {
           && request.resource.data.get('reviewedBy', '') == uid()
           && request.resource.data.get('reviewedAt', request.time) == now()
           && (request.resource.data.status == 'approved'
-              ? changedKeys().hasOnly(['status', 'role', 'globalPermissions', 'committeeIds', 'reviewedBy', 'reviewedAt', 'name'])
+              ? changedKeys().hasOnly(['status', 'decisionReason', 'role', 'globalPermissions', 'committeeIds', 'reviewedBy', 'reviewedAt', 'name'])
               : (changedKeys().hasOnly(['status', 'decisionReason', 'reviewedBy', 'reviewedAt', 'name'])
                  && (request.resource.data.status in ['rejected', 'suspended']
                      ? str(request.resource.data.get('decisionReason', ''), 3, 300)
@@ -237,7 +252,7 @@ service cloud.firestore {
         && request.resource.data.colorKey in colors()
         && request.resource.data.status == 'active'
         && request.resource.data.teamWidePermissions is list
-        && request.resource.data.teamWidePermissions.size() <= 12
+        && request.resource.data.teamWidePermissions.size() <= 16
         && request.resource.data.teamWidePermissions.hasOnly(committeePerms())
         && request.resource.data.createdBy == uid()
         && request.resource.data.createdAt == now();
@@ -248,7 +263,7 @@ service cloud.firestore {
         && request.resource.data.colorKey in colors()
         && request.resource.data.status in ['active', 'archived']
         && request.resource.data.teamWidePermissions is list
-        && request.resource.data.teamWidePermissions.size() <= 12
+        && request.resource.data.teamWidePermissions.size() <= 16
         && request.resource.data.teamWidePermissions.hasOnly(committeePerms());
 
       allow delete: if isSuperAdmin();
@@ -266,10 +281,10 @@ service cloud.firestore {
           && request.resource.data.uid == m
           && request.resource.data.role in ['member', 'manager']
           && request.resource.data.grants is list
-          && request.resource.data.grants.size() <= 12
+          && request.resource.data.grants.size() <= 16
           && request.resource.data.grants.hasOnly(committeePerms())
           && request.resource.data.denies is list
-          && request.resource.data.denies.size() <= 12
+          && request.resource.data.denies.size() <= 16
           && request.resource.data.denies.hasOnly(committeePerms())
           && request.resource.data.status == 'active';
       }
@@ -280,7 +295,7 @@ service cloud.firestore {
         return isApproved()
           && (isSuperAdmin() || hasGlobal('users.managePermissions'))
           && m != uid()
-          && (isSuperAdmin() || userAfterDoc(m).role != 'superAdmin');
+          && targetNotSuperAdmin(m);
       }
 
       allow create: if canManageMembership(m)
@@ -292,10 +307,10 @@ service cloud.firestore {
         && request.resource.data.uid == resource.data.uid
         && request.resource.data.role in ['member', 'manager']
         && request.resource.data.grants is list
-        && request.resource.data.grants.size() <= 12
+        && request.resource.data.grants.size() <= 16
         && request.resource.data.grants.hasOnly(committeePerms())
         && request.resource.data.denies is list
-        && request.resource.data.denies.size() <= 12
+        && request.resource.data.denies.size() <= 16
         && request.resource.data.denies.hasOnly(committeePerms())
         && request.resource.data.status == 'active'
         && c in userAfterDoc(m).committeeIds;
@@ -348,8 +363,10 @@ service cloud.firestore {
           && d.archived is bool;
       }
 
+      // دليل الطلاب العام: من يملك students.oversight (وsuperAdmin ضمناً) يرى كل اللجان
       allow get, list: if isApproved()
-        && hasCommitteePermission(resource.data.committeeId, 'students.read');
+        && (hasGlobal('students.oversight')
+            || hasCommitteePermission(resource.data.committeeId, 'students.read'));
 
       allow create: if isApproved()
         && validStudent(request.resource.data)
@@ -391,6 +408,17 @@ service cloud.firestore {
 
     match /requests/{r} {
       function routingRule(t) { return get(/databases/$(database)/documents/routingRules/$(t)).data; }
+      function hasRoutingRule(t) { return exists(/databases/$(database)/documents/routingRules/$(t)); }
+
+      // غياب قاعدة توجيه يعني أن المرسل يختار الوجهة؛
+      // بدون هذا الفرع كان get() يفشل على وثيقة غير موجودة فيرفض الطلب بخطأ غامض.
+      function destinationOk(d) {
+        return manualRequest(d)
+          ? d.senderCommitteeId == d.destinationCommitteeId
+          : (hasRoutingRule(d.type) && routingRule(d.type).mode == 'fixed'
+              ? d.destinationCommitteeId == routingRule(d.type).committeeId
+              : d.destinationCommitteeId != d.senderCommitteeId);
+      }
 
       function validNewRequest(d) {
         return d.keys().hasOnly(['type', 'createdBy', 'createdByName', 'senderCommitteeId',
@@ -413,22 +441,26 @@ service cloud.firestore {
                  && d.currency in ['SYP', 'USD', 'TRY']
                  && d.direction == (d.type in ['income', 'manual_income'] ? 'income' : 'expense'))
               : !('amount' in d) && !('currency' in d) && !('direction' in d))
-          && (manualRequest(d)
-              ? d.senderCommitteeId == d.destinationCommitteeId
-              : (routingRule(d.type).mode == 'fixed'
-                 ? d.destinationCommitteeId == routingRule(d.type).committeeId
-                 : d.destinationCommitteeId != d.senderCommitteeId));
+          && destinationOk(d);
       }
 
-      allow get: if isApproved()
-        && (resource.data.createdBy == uid()
-            || hasCommitteePermission(resource.data.senderCommitteeId, 'requests.send')
-            || hasCommitteePermission(resource.data.destinationCommitteeId, 'requests.receive'));
+      // ثلاث جهات تطلع على الطلب:
+      // 1) اللجنة المستلمة — وتشمل من يملك finance.read فيها
+      // 2) جهة الإدارة عبر requests.oversight (وsuperAdmin ضمناً)
+      // 3) اللجنة المرسلة ومنشئ الطلب
+      // كل فرع يلمس حقلًا واحدًا فقط كي يبقى قابلاً للإثبات في استعلامات list المقيّدة.
+      function requestViewerOk(d) {
+        return hasGlobal('requests.oversight')
+          || d.createdBy == uid()
+          || hasCommitteePermission(d.destinationCommitteeId, 'requests.receive')
+          || hasCommitteePermission(d.destinationCommitteeId, 'finance.read')
+          || hasCommitteePermission(d.senderCommitteeId, 'requests.send')
+          || hasCommitteePermission(d.senderCommitteeId, 'finance.read');
+      }
 
-      allow list: if isApproved()
-        && (hasCommitteePermission(resource.data.createdBy == uid() ? resource.data.senderCommitteeId : resource.data.destinationCommitteeId, 'requests.receive')
-            || hasCommitteePermission(resource.data.senderCommitteeId, 'requests.send')
-            || resource.data.createdBy == uid());
+      allow get: if isApproved() && requestViewerOk(resource.data);
+
+      allow list: if isApproved() && requestViewerOk(resource.data);
 
       allow create: if isApproved()
         && validNewRequest(request.resource.data);
@@ -441,8 +473,8 @@ service cloud.firestore {
 
       // لا يُسمح بلمس أي حقل هوية/محتوى بعد الإنشاء
       function immutableRequestFieldsOk() {
-        return changedKeys().hasOnly(['status', 'decisionReason', 'decidedBy', 'decidedByName', 'decidedAt',
-                                      'executedBy', 'executedByName', 'executedAt', 'updatedAt']);
+        return changedKeys().hasOnly(['status', 'decisionReason', 'deliveryDate', 'decidedBy', 'decidedByName',
+                                      'decidedAt', 'executedBy', 'executedByName', 'executedAt', 'updatedAt']);
       }
 
       function senderCancel() {
@@ -453,8 +485,10 @@ service cloud.firestore {
       }
 
       function decidePermOk() {
-        return manualRequest(resource.data)
-          ? hasCommitteePermission(resource.data.destinationCommitteeId, 'finance.post')
+        // فصل الصلاحيات المالية: من يسجّل الحركة ليس بالضرورة من يوافق على الطلب
+        return financialRequest(resource.data)
+          ? hasCommitteePermission(resource.data.destinationCommitteeId,
+              manualRequest(resource.data) ? 'finance.post' : 'finance.approve')
           : hasCommitteePermission(resource.data.destinationCommitteeId, 'requests.decide');
       }
 
@@ -465,6 +499,13 @@ service cloud.firestore {
           && onlyChanged(['status', 'updatedAt']);
       }
 
+      // موعد التسليم اختياري؛ إن وُجد يجب أن يكون تاريخًا وله معنى مع القبول فقط
+      function deliveryDateOk() {
+        return request.resource.data.get('deliveryDate', null) == null
+          || (request.resource.data.deliveryDate is timestamp
+              && request.resource.data.status == 'approved');
+      }
+
       function decideRequest() {
         return resource.data.status in ['submitted', 'under_review']
           && request.resource.data.status in ['approved', 'rejected']
@@ -473,7 +514,9 @@ service cloud.firestore {
           && request.resource.data.decidedBy == uid()
           && request.resource.data.decidedByName == myUser().name
           && request.resource.data.decidedAt == now()
-          && onlyChanged(['status', 'decisionReason', 'decidedBy', 'decidedByName', 'decidedAt', 'updatedAt']);
+          && deliveryDateOk()
+          && onlyChanged(['status', 'decisionReason', 'deliveryDate', 'decidedBy', 'decidedByName',
+                          'decidedAt', 'updatedAt']);
       }
 
       function ledgerAfter() {
@@ -506,26 +549,27 @@ service cloud.firestore {
     /* ---------- السجل المالي (إنشاء فقط) ---------- */
 
     match /ledgerEntries/{r} {
-      function req() { return get(/databases/$(database)/documents/requests/$(r)).data; }
+      // ملاحظة: get() على الطلب يفشل بـ"Service call error" عندما يكون الطلب نفسه
+      // قيد الإنشاء/التحديث في المعاملة نفسها (الإدخال اليدوي الذري)، لذا نتحقق كله
+      // من getAfter() — وهي أيضًا ما يمنع إعادة إنشاء حركة: مسار الوثيقة ملحوم بـ requestId.
       function reqAfter() { return getAfter(/databases/$(database)/documents/requests/$(r)).data; }
 
       allow get, list: if isApproved()
         && hasCommitteePermission(resource.data.committeeId, 'finance.read');
 
       allow create: if isApproved()
-        && financialRequest(req())
-        && req().status == 'approved'
+        && financialRequest(reqAfter())
         && reqAfter().status == 'executed'
         && reqAfter().executedBy == uid()
-        && hasCommitteePermission(req().destinationCommitteeId, 'finance.post')
+        && hasCommitteePermission(reqAfter().destinationCommitteeId, 'finance.post')
         && request.resource.data.keys().hasOnly(['requestId', 'committeeId', 'type', 'direction', 'amount',
                                                  'currency', 'note', 'executedBy', 'executedByName', 'executedAt', 'createdAt'])
         && request.resource.data.requestId == r
-        && request.resource.data.committeeId == req().destinationCommitteeId
-        && request.resource.data.type == req().type
-        && request.resource.data.direction == req().direction
-        && request.resource.data.amount == req().amount
-        && request.resource.data.currency == req().currency
+        && request.resource.data.committeeId == reqAfter().destinationCommitteeId
+        && request.resource.data.type == reqAfter().type
+        && request.resource.data.direction == reqAfter().direction
+        && request.resource.data.amount == reqAfter().amount
+        && request.resource.data.currency == reqAfter().currency
         && str(request.resource.data.note, 0, 300)
         && request.resource.data.note == reqAfter().decisionReason
         && request.resource.data.executedBy == uid()
@@ -543,8 +587,10 @@ service cloud.firestore {
 
       allow create: if isApproved()
         && request.resource.data.keys().hasOnly(['kind', 'actorUid', 'targetId', 'detail', 'at'])
-        && request.resource.data.kind in ['finance.executed', 'user.approved', 'user.rejected', 'user.suspended',
-                                          'request.cancelled', 'student.hard_deleted', 'channel.message_hidden']
+        && request.resource.data.kind in ['finance.executed', 'request.executed', 'request.cancelled',
+                                          'user.approved', 'user.rejected', 'user.suspended', 'user.reinstated',
+                                          'user.membership_updated',
+                                          'student.hard_deleted', 'channel.message_hidden']
         && request.resource.data.actorUid == uid()
         && str(request.resource.data.targetId, 1, 150)
         && str(request.resource.data.get('detail', ''), 0, 500)
@@ -645,6 +691,100 @@ service cloud.firestore {
         && request.resource.data.lastReadAt == now();
 
       allow delete: if false;
+    }
+
+    /* ---------- قائمة مهام اللجان ---------- */
+
+    match /tasks/{t} {
+      // ترتيب الفروع مقصود: فرع hasGlobal يُثبت دائمًا (لا يقرأ حقول الوثيقة)
+      // فيمر أولًا؛ ولو تأخر لسمّم خطأ الحقول غير المقيَّدة فروعَ الاستعلام كلها.
+      allow get, list: if isApproved()
+        && (hasGlobal('requests.oversight')
+            || resource.data.assigneeUid == uid()
+            || inCommittee(resource.data.committeeId));
+
+      function taskFieldsOk(d) {
+        return d.keys().hasOnly(['committeeId', 'title', 'details', 'status', 'priority',
+                                 'assigneeUid', 'assigneeName', 'dueDate', 'requestId',
+                                 'createdBy', 'createdByName', 'createdAt', 'updatedAt', 'doneAt'])
+          && str(d.title, 2, 120)
+          && str(d.details, 0, 2000)
+          && str(d.assigneeUid, 0, 150)
+          && str(d.assigneeName, 0, 60)
+          && str(d.requestId, 0, 150)
+          && (d.dueDate == null || d.dueDate is timestamp)
+          && d.status in taskStatuses()
+          && d.priority in taskPriorities()
+          && activeCommittee(d.committeeId);
+      }
+
+      function doneAtOk(d) {
+        return d.status == 'done' ? d.doneAt is timestamp : d.doneAt == null;
+      }
+
+      allow create: if isApproved()
+        && taskFieldsOk(request.resource.data)
+        && doneAtOk(request.resource.data)
+        && hasCommitteePermission(request.resource.data.committeeId, 'tasks.manage')
+        && request.resource.data.createdBy == uid()
+        && request.resource.data.createdByName == myUser().name
+        && request.resource.data.createdAt == now()
+        && request.resource.data.updatedAt == now()
+        && (request.resource.data.doneAt is timestamp ? request.resource.data.doneAt <= now() : true);
+
+      allow update: if isApproved()
+        && request.resource.data.updatedAt == now()
+        && (taskManagerUpdate() || assigneeProgressUpdate());
+
+      // من يملك tasks.manage يعدّل كل حقول المهمة
+      function taskManagerUpdate() {
+        return hasCommitteePermission(resource.data.committeeId, 'tasks.manage')
+          && taskFieldsOk(request.resource.data)
+          && doneAtOk(request.resource.data)
+          && request.resource.data.committeeId == resource.data.committeeId
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdByName == resource.data.createdByName
+          && request.resource.data.createdAt == resource.data.createdAt;
+      }
+
+      // المكلَّف بالمهمة يحرّك حالتته ويضيف ملاحظاته فقط
+      function assigneeProgressUpdate() {
+        return resource.data.assigneeUid == uid()
+          && resource.data.assigneeUid != ''
+          && onlyChanged(['status', 'details', 'doneAt', 'updatedAt'])
+          && request.resource.data.status in taskStatuses()
+          && request.resource.data.status != 'cancelled'
+          && str(request.resource.data.details, 0, 2000)
+          && doneAtOk(request.resource.data)
+          && (request.resource.data.doneAt is timestamp ? request.resource.data.doneAt <= now() : true);
+      }
+
+      allow delete: if isApproved() && hasCommitteePermission(resource.data.committeeId, 'tasks.manage');
+    }
+
+    /* ---------- التقارير الأسبوعية ---------- */
+
+    match /weeklyReports/{w} {
+      allow get, list: if isApproved()
+        && (hasGlobal('requests.oversight') || inCommittee(resource.data.committeeId));
+
+      allow create: if isApproved()
+        && request.resource.data.keys().hasOnly(['committeeId', 'title', 'body', 'periodFrom', 'periodTo',
+                                                 'createdBy', 'createdByName', 'createdAt'])
+        && str(request.resource.data.title, 2, 120)
+        && str(request.resource.data.body, 1, 6000)
+        && request.resource.data.periodFrom is timestamp
+        && request.resource.data.periodTo is timestamp
+        && request.resource.data.periodTo >= request.resource.data.periodFrom
+        && activeCommittee(request.resource.data.committeeId)
+        && hasCommitteePermission(request.resource.data.committeeId, 'reports.write')
+        && request.resource.data.createdBy == uid()
+        && request.resource.data.createdByName == myUser().name
+        && request.resource.data.createdAt == now();
+
+      // التقرير وثيقة مرسلة للإدارة: لا تُعدَّل بعد الإرسال
+      allow update: if false;
+      allow delete: if isSuperAdmin();
     }
 
     /* ---------- رفض كل ما عدا ذلك ---------- */

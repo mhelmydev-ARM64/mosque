@@ -10,7 +10,8 @@ import type { Student } from "../../domain/models";
 import { normalizeArabic, buildSearchTokens } from "../../domain/arabic";
 import { cleanValues, fieldValueOrDefault, validateStudentValues } from "../../domain/template";
 import { MEMO_LEVELS } from "../../domain/requests";
-import { Loading, EmptyState, ConfirmModal, useToast } from "../../components/ui";
+import { Loading, EmptyState, ConfirmModal, Select, useToast } from "../../components/ui";
+import { IconArchive, IconClipboard, IconSearch, IconTrash } from "../../components/icons";
 
 type Draft = Record<string, unknown>;
 
@@ -112,14 +113,14 @@ export default function StudentEditorPage() {
   if (studentId && !existing) {
     return (
       <AppLayout title="الطالب">
-        <EmptyState icon="🔍" title="الطالب غير موجود" sub="ربما حُذف أو لا تملك صلاحية قراءته" />
+        <EmptyState icon={<IconSearch size={34} />} title="الطالب غير موجود" sub="ربما حُذف أو لا تملك صلاحية قراءته" />
       </AppLayout>
     );
   }
   if (!template) {
     return (
       <AppLayout title="الطالب">
-        <EmptyState icon="📋" title="لم يُعرَّف قالب الطلاب بعد" sub="تُعرّفه الإدارة من لوحة الإدارة ← القالب" />
+        <EmptyState icon={<IconClipboard size={34} />} title="لم يُعرَّف قالب الطلاب بعد" sub="تُعرّفه الإدارة من لوحة الإدارة ← القالب" />
       </AppLayout>
     );
   }
@@ -144,14 +145,13 @@ export default function StudentEditorPage() {
               {committeeId ? <span {...(byId.get(committeeId) ? { className: "badge badge--committee", "data-cc": byId.get(committeeId)!.colorKey } : {})}>{byId.get(committeeId)?.name ?? "—"}</span> : "—"}
             </p>
           ) : (
-            <select className="select" value={committeeId} onChange={(e) => setCommitteeId(e.target.value)}>
-              <option value="">— اختر اللجنة —</option>
-              {creatable.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            <Select
+              value={committeeId}
+              onChange={setCommitteeId}
+              placeholder="— اختر اللجنة —"
+              invalid={!!errors.committeeId}
+              options={creatable.map((c) => ({ value: c.id, label: c.name }))}
+            />
           )}
           {errors.committeeId ? <span className="error-text">{errors.committeeId}</span> : null}
         </div>
@@ -169,12 +169,13 @@ export default function StudentEditorPage() {
               ) : f.type === "date" ? (
                 <input className="input" type="date" value={String(v ?? "")} onChange={(e) => set(e.target.value)} disabled={!canWrite} />
               ) : f.type === "select" ? (
-                <select className="select" value={String(v ?? "")} onChange={(e) => set(e.target.value)} disabled={!canWrite}>
-                  <option value="">—</option>
-                  {(f.options ?? []).map((o) => (
-                    <option key={o} value={o}>{o}</option>
-                  ))}
-                </select>
+                <Select
+                  value={String(v ?? "")}
+                  onChange={set}
+                  disabled={!canWrite}
+                  placeholder="—"
+                  options={(f.options ?? []).map((o) => ({ value: o, label: o }))}
+                />
               ) : f.type === "multiselect" ? (
                 <div className="row">
                   {(f.options ?? []).map((o) => {
@@ -211,11 +212,12 @@ export default function StudentEditorPage() {
           </div>
           <div className="field">
             <span className="label">مستوى الحفظ</span>
-            <select className="select" value={memo} onChange={(e) => setMemo(e.target.value)} disabled={!canWrite}>
-              {MEMO_LEVELS.map((m) => (
-                <option key={m.key} value={m.key}>{m.label}</option>
-              ))}
-            </select>
+            <Select
+              value={memo}
+              onChange={setMemo}
+              disabled={!canWrite}
+              options={MEMO_LEVELS.map((m) => ({ value: m.key, label: m.label }))}
+            />
           </div>
         </div>
 
@@ -230,13 +232,18 @@ export default function StudentEditorPage() {
 
       {isEdit && (isSuperAdmin || committeePerm(existing!.committeeId, "students.update")) ? (
         <div className="card">
-          <div className="card__title">إجراءات</div>
+          <div className="card__title">
+            <IconArchive size={17} />
+            إجراءات
+          </div>
           <div className="row">
             <button type="button" className="btn" onClick={() => setConfirmArchive(true)}>
+              <IconArchive size={17} />
               {existing!.archived ? "إلغاء الأرشفة" : "أرشفة"}
             </button>
             {isSuperAdmin || committeePerm(existing!.committeeId, "students.delete") ? (
               <button type="button" className="btn btn--danger" onClick={() => setConfirmDelete(true)}>
+                <IconTrash size={17} />
                 حذف نهائي
               </button>
             ) : null}

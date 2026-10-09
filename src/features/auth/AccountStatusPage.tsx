@@ -1,6 +1,10 @@
 import { useAuth } from "./AuthContext";
 import { useAppearance } from "../../app/theme/ThemeProvider";
+import { FONT_LABELS, PRIMARY_LABELS, THEME_LABELS } from "../../app/theme/ThemeProvider";
+import type { FontSize, PrimaryColor, ThemeMode } from "../../app/theme/ThemeProvider";
 import { USER_STATUS_LABELS } from "../../domain/requests";
+import { Select } from "../../components/ui";
+import { IconAlert, IconCheckCircle, IconClock, IconLogout, IconPalette, IconShield, IconUser } from "../../components/icons";
 
 const TONES: Record<string, string> = {
   pending: "badge--warn",
@@ -17,6 +21,33 @@ const HINTS: Record<string, string> = {
   suspended: "تم إيقاف حسابك مؤقتًا من قِبل الإدارة.",
 };
 
+const THEME_OPTIONS = (["auto", "light", "dark"] as ThemeMode[]).map((v) => ({
+  value: v,
+  label: THEME_LABELS[v],
+}));
+
+const FONT_OPTIONS = (["sm", "md", "lg", "xl"] as FontSize[]).map((v) => ({
+  value: v,
+  label: FONT_LABELS[v],
+}));
+
+const PRIMARY_OPTIONS = (["green", "blue", "indigo", "violet", "rose", "orange"] as PrimaryColor[]).map((v) => ({
+  value: v,
+  label: PRIMARY_LABELS[v],
+}));
+
+function statusIcon(status: string) {
+  if (status === "approved") return <IconCheckCircle size={31} />;
+  if (status === "rejected" || status === "suspended") return <IconAlert size={31} />;
+  return <IconClock size={31} />;
+}
+
+function statusLogoClass(status: string) {
+  if (status === "approved") return "auth-logo auth-logo--ok";
+  if (status === "rejected" || status === "suspended") return "auth-logo auth-logo--bad";
+  return "auth-logo auth-logo--warn";
+}
+
 export function AccountStatusPage() {
   const { user, logout } = useAuth();
   const { theme, fontSize, primary, setAppearance } = useAppearance();
@@ -28,10 +59,15 @@ export function AccountStatusPage() {
   return (
     <div className="auth-wrap">
       <div className="auth-card">
-        <div className="auth-logo">{user.status === "approved" ? "🎉" : "⏳"}</div>
+        <div className={statusLogoClass(user.status)}>{statusIcon(user.status)}</div>
         <h1 className="auth-title">حالة الحساب</h1>
+        <p className="auth-sub">آخر تحديث للحالة يظهر هنا تلقائيًا</p>
 
         <div className="card">
+          <div className="card__title">
+            <IconUser size={17} />
+            بياناتك
+          </div>
           <div className="kv">
             <span className="kv__k">الاسم</span>
             <span className="bold">{user.name}</span>
@@ -47,7 +83,11 @@ export function AccountStatusPage() {
         </div>
 
         <div className="card">
-          <p className="muted small">{HINTS[user.status] ?? ""}</p>
+          <div className="card__title">
+            <IconShield size={17} />
+            قرار الإدارة
+          </div>
+          <p className="muted small">{HINTS[user.status] ?? "تابع هذه الصفحة لمعرفة قرار الإدارة."}</p>
           {user.decisionReason ? (
             <>
               <div className="label">سبب الإدارة</div>
@@ -59,38 +99,38 @@ export function AccountStatusPage() {
         </div>
 
         <details className="card small muted">
-          <summary className="bold">المظهر (يُحفظ على جهازك فقط)</summary>
+          <summary className="bold appear-summary">
+            <IconPalette size={16} />
+            المظهر (يُحفظ على جهازك فقط)
+          </summary>
           <div className="field mt-1">
             <span className="label">الثيم</span>
-            <select className="select" value={theme} onChange={(e) => setAppearance({ theme: e.target.value as typeof theme })}>
-              <option value="auto">تلقائي حسب الجهاز</option>
-              <option value="light">فاتح</option>
-              <option value="dark">داكن</option>
-            </select>
+            <Select
+              value={theme}
+              onChange={(v) => setAppearance({ theme: v as ThemeMode })}
+              options={THEME_OPTIONS}
+            />
           </div>
           <div className="field">
             <span className="label">حجم الخط</span>
-            <select className="select" value={fontSize} onChange={(e) => setAppearance({ fontSize: e.target.value as typeof fontSize })}>
-              <option value="sm">صغير</option>
-              <option value="md">متوسط</option>
-              <option value="lg">كبير</option>
-              <option value="xl">كبير جدًا</option>
-            </select>
+            <Select
+              value={fontSize}
+              onChange={(v) => setAppearance({ fontSize: v as FontSize })}
+              options={FONT_OPTIONS}
+            />
           </div>
           <div className="field">
             <span className="label">اللون الرئيسي</span>
-            <select className="select" value={primary} onChange={(e) => setAppearance({ primary: e.target.value as typeof primary })}>
-              <option value="green">أخضر</option>
-              <option value="blue">أزرق</option>
-              <option value="indigo">نيلي</option>
-              <option value="violet">بنفسجي</option>
-              <option value="rose">وردي</option>
-              <option value="orange">برتقالي</option>
-            </select>
+            <Select
+              value={primary}
+              onChange={(v) => setAppearance({ primary: v as PrimaryColor })}
+              options={PRIMARY_OPTIONS}
+            />
           </div>
         </details>
 
-        <button type="button" className="btn btn--block" onClick={() => void logout()}>
+        <button type="button" className="btn btn--block mt-1" onClick={() => void logout()}>
+          <IconLogout size={17} />
           تسجيل الخروج
         </button>
       </div>

@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useTemplate } from '../../services/hooks';
 import { saveTemplate } from '../../services/atomicWrites';
-import { Loading, EmptyState, Modal, useToast } from '../../components/ui';
+import { Loading, EmptyState, Modal, Select, useToast } from '../../components/ui';
+import { IconArrowDown, IconArrowUp, IconClipboard, IconLock, IconPlus, IconTrash } from '../../components/icons';
 import { fieldKeyFor } from '../../domain/template';
 import type { FieldType, StudentTemplate, TemplateField } from '../../domain/models';
 
@@ -82,7 +83,7 @@ export default function TemplateEditorPage() {
     setBusy(false);
   }
 
-  if (!isAdmin) return <EmptyState icon="🔒" title="للإدارة فقط" />;
+  if (!isAdmin) return <EmptyState icon={<IconLock size={34} />} title="للإدارة فقط" />;
   if (loading) return <Loading />;
 
   return (
@@ -97,7 +98,7 @@ export default function TemplateEditorPage() {
 
       {!canManage && <p className="help-text">لديك عرض فقط.</p>}
 
-      {current.length === 0 && <EmptyState icon="🧾" title="لا حقول" sub="أضف أول حقل للقالب." />}
+      {current.length === 0 && <EmptyState icon={<IconClipboard size={34} />} title="لا حقول" sub="أضف أول حقل للقالب." />}
 
       {current.map((f, i) => (
         <div key={f.key} className="card">
@@ -112,9 +113,9 @@ export default function TemplateEditorPage() {
             />
             {canManage && (
               <>
-                <button className="icon-btn" onClick={() => move(i, -1)} aria-label="أعلى">↑</button>
-                <button className="icon-btn" onClick={() => move(i, 1)} aria-label="أسفل">↓</button>
-                <button className="icon-btn" onClick={() => removeField(i)} aria-label="حذف">🗑️</button>
+                <button className="icon-btn" onClick={() => move(i, -1)} aria-label="أعلى"><IconArrowUp size={16} /></button>
+                <button className="icon-btn" onClick={() => move(i, 1)} aria-label="أسفل"><IconArrowDown size={16} /></button>
+                <button className="icon-btn icon-btn--danger" onClick={() => removeField(i)} aria-label="حذف"><IconTrash size={16} /></button>
               </>
             )}
           </div>
@@ -122,16 +123,12 @@ export default function TemplateEditorPage() {
           <div className="grid-2" style={{ marginTop: 8 }}>
             <div className="field">
               <span className="label">النوع</span>
-              <select
-                className="input"
+              <Select
                 value={f.type}
-                onChange={(e) => update(i, { type: e.target.value as FieldType })}
+                onChange={(v) => update(i, { type: v as FieldType })}
                 disabled={!canManage}
-              >
-                {FIELD_TYPES.map((t) => (
-                  <option key={t.key} value={t.key}>{t.label}</option>
-                ))}
-              </select>
+                options={FIELD_TYPES.map((t) => ({ value: t.key, label: t.label }))}
+              />
             </div>
             <div className="col">
               <label className="check-row">
@@ -180,7 +177,7 @@ export default function TemplateEditorPage() {
       {canManage && (
         <div className="row">
           <button className="btn btn--ghost" onClick={() => setFields([...current, blankField(current.map((f) => f.key))])}>
-            + حقل جديد
+            <IconPlus size={16} />حقل جديد
           </button>
           <span className="flex1" />
           <button

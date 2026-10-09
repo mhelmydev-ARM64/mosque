@@ -16,3 +16,4 @@ ui-debug.log
 *.jpeg
 .DS_Store
 Thumbs.db
+tsconfig.tsbuildinfo

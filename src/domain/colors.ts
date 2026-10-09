@@ -36,6 +36,11 @@ export function isCommitteeColor(key: string): key is CommitteeColorKey {
 
 const safeColor = (key: string): CommitteeColorKey => (isCommitteeColor(key) ? key : 'emerald');
 
+/** اسم اللون الآمن وحده، لمن يريد تركيب className الخاص به. */
+export function committeeColor(key: string): CommitteeColorKey {
+  return safeColor(key);
+}
+
 export function committeeBadgeProps(key: string): { className: string; 'data-cc': string } {
   return { className: 'badge badge--committee', 'data-cc': safeColor(key) };
 }

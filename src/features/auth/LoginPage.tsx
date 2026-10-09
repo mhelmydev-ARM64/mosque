@@ -1,7 +1,9 @@
 import { useState } from "react";
+import type { FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { loginWithPhone, loginWithEmail, mapAuthError } from "../../services/atomicWrites";
-import { useToast } from "../../components/ui";
+import { PasswordInput, useToast } from "../../components/ui";
+import { IconCommittee, IconEmail, IconPhone } from "../../components/icons";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -13,7 +15,7 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
     setError("");
     setBusy(true);
@@ -32,16 +34,39 @@ export function LoginPage() {
   return (
     <div className="auth-wrap">
       <div className="auth-card">
-        <div className="auth-logo">📋</div>
+        <div className="auth-logo">
+          <IconCommittee size={32} />
+        </div>
         <h1 className="auth-title">إدارة اللجان والطلاب</h1>
-        <p className="auth-title muted small mb-2">سجّل دخولك للمتابعة</p>
+        <p className="auth-sub">سجّل دخولك للمتابعة</p>
+
+        <div className="tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "phone"}
+            className={`tab ${mode === "phone" ? "tab--on" : ""}`}
+            onClick={() => { setMode("phone"); setError(""); }}
+          >
+            <IconPhone size={16} />
+            رقم الهاتف
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "email"}
+            className={`tab ${mode === "email" ? "tab--on" : ""}`}
+            onClick={() => { setMode("email"); setError(""); }}
+          >
+            <IconEmail size={16} />
+            بريد إداري
+          </button>
+        </div>
 
         <form onSubmit={submit} className="card">
           {mode === "phone" ? (
             <div className="field">
-              <label className="label required" htmlFor="login-phone">
-                رقم الهاتف
-              </label>
+              <label className="label required" htmlFor="login-phone">رقم الهاتف</label>
               <input
                 id="login-phone"
                 className="input sw"
@@ -57,9 +82,7 @@ export function LoginPage() {
             </div>
           ) : (
             <div className="field">
-              <label className="label required" htmlFor="login-email">
-                البريد الإداري
-              </label>
+              <label className="label required" htmlFor="login-email">البريد الإداري</label>
               <input
                 id="login-email"
                 className="input sw"
@@ -75,18 +98,12 @@ export function LoginPage() {
           )}
 
           <div className="field">
-            <label className="label required" htmlFor="login-pass">
-              كلمة المرور
-            </label>
-            <input
+            <label className="label required" htmlFor="login-pass">كلمة المرور</label>
+            <PasswordInput
               id="login-pass"
-              className="input"
-              dir="ltr"
-              type="password"
-              autoComplete="current-password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
+              onChange={setPassword}
+              autoComplete="current-password"
               minLength={6}
             />
           </div>
@@ -95,14 +112,6 @@ export function LoginPage() {
 
           <button type="submit" className="btn btn--primary btn--block" disabled={busy}>
             {busy ? "جارٍ الدخول..." : "دخول"}
-          </button>
-
-          <button
-            type="button"
-            className="btn btn--ghost btn--block btn--sm mt-1"
-            onClick={() => setMode((m) => (m === "phone" ? "email" : "phone"))}
-          >
-            {mode === "phone" ? "الدخول ببريد إداري بدلًا من الهاتف" : "الدخول برقم الهاتف"}
           </button>
         </form>
 

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { AppLayout } from "../../app/layouts/AppLayout";
 import { useAuth } from "../auth/AuthContext";
 import { useAppearance, THEME_LABELS, FONT_LABELS, PRIMARY_LABELS } from "../../app/theme/ThemeProvider";
@@ -6,6 +7,28 @@ import type { ThemeMode, FontSize, PrimaryColor } from "../../app/theme/ThemePro
 import { changePassword, mapAuthError } from "../../services/atomicWrites";
 import { useToast } from "../../components/ui";
 import { PRIMARY_SWATCHES } from "../../domain/themeChoices";
+import {
+  IconDevice,
+  IconKey,
+  IconLogout,
+  IconMoon,
+  IconPalette,
+  IconSun,
+  IconText,
+  IconUser,
+} from "../../components/icons";
+
+const THEME_ICONS: Record<ThemeMode, ReactNode> = {
+  light: <IconSun size={19} />,
+  dark: <IconMoon size={19} />,
+  auto: <IconDevice size={19} />,
+};
+
+const THEME_HINTS: Record<ThemeMode, string> = {
+  light: "خلفية فاتحة دائمًا",
+  dark: "خلفية داكنة دائمًا",
+  auto: "يتبع إعداد جهازك",
+};
 
 export default function SettingsPage() {
   const { user, logout } = useAuth();
@@ -18,7 +41,7 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
 
-  async function onChangePassword(e: React.FormEvent) {
+  async function onChangePassword(e: FormEvent) {
     e.preventDefault();
     setMsg("");
     if (next.length < 8) {
@@ -46,14 +69,26 @@ export default function SettingsPage() {
   return (
     <AppLayout title="الإعدادات">
       <div className="card">
-        <div className="card__title">🎨 المظهر <span className="tiny faint">(يُحفظ على جهازك فقط)</span></div>
+        <div className="card__title">
+          <IconPalette size={17} />
+          المظهر
+          <span className="tiny faint">يُحفظ على جهازك فقط</span>
+        </div>
 
         <div className="field">
           <span className="label">الثيم</span>
-          <div className="row">
+          <div className="theme-opts">
             {(["light", "dark", "auto"] as ThemeMode[]).map((t) => (
-              <button key={t} type="button" className={`chip ${theme === t ? "chip--on" : ""}`} onClick={() => setAppearance({ theme: t })}>
-                {THEME_LABELS[t]}
+              <button
+                key={t}
+                type="button"
+                className={`theme-opt ${theme === t ? "is-on" : ""}`}
+                aria-pressed={theme === t}
+                onClick={() => setAppearance({ theme: t })}
+              >
+                {THEME_ICONS[t]}
+                <span>{THEME_LABELS[t]}</span>
+                <small>{THEME_HINTS[t]}</small>
               </button>
             ))}
           </div>
@@ -63,7 +98,13 @@ export default function SettingsPage() {
           <span className="label">حجم الخط</span>
           <div className="row">
             {(["sm", "md", "lg", "xl"] as FontSize[]).map((f) => (
-              <button key={f} type="button" className={`chip ${fontSize === f ? "chip--on" : ""}`} onClick={() => setAppearance({ fontSize: f })}>
+              <button
+                key={f}
+                type="button"
+                className={`chip ${fontSize === f ? "chip--on" : ""}`}
+                aria-pressed={fontSize === f}
+                onClick={() => setAppearance({ fontSize: f })}
+              >
                 {FONT_LABELS[f]}
               </button>
             ))}
@@ -79,18 +120,31 @@ export default function SettingsPage() {
                 type="button"
                 title={PRIMARY_LABELS[p]}
                 aria-label={PRIMARY_LABELS[p]}
+                aria-pressed={primary === p}
                 className={`swatch ${primary === p ? "swatch--on" : ""}`}
                 style={{ background: PRIMARY_SWATCHES[p] }}
                 onClick={() => setAppearance({ primary: p })}
               />
             ))}
           </div>
-          <span className="help-text">{PRIMARY_LABELS[primary]}</span>
+          <span className="help-text">اللون الحالي: {PRIMARY_LABELS[primary]}</span>
+        </div>
+
+        <div className="appear-preview">
+          <div className="appear-preview__row">
+            <button type="button" className="btn btn--primary btn--sm" tabIndex={-1}>زر رئيسي</button>
+            <span className="badge badge--primary">شارة</span>
+            <span className="chip chip--on">خيار</span>
+            <span className="muted small">هكذا ستظهر العناصر بلونك المختار.</span>
+          </div>
         </div>
       </div>
 
       <div className="card">
-        <div className="card__title">🔑 تغيير كلمة المرور</div>
+        <div className="card__title">
+          <IconKey size={17} />
+          تغيير كلمة المرور
+        </div>
         <form onSubmit={onChangePassword}>
           <div className="field">
             <label className="label required" htmlFor="cur-pass">كلمة المرور الحالية</label>
@@ -99,6 +153,7 @@ export default function SettingsPage() {
           <div className="field">
             <label className="label required" htmlFor="new-pass">كلمة المرور الجديدة</label>
             <input id="new-pass" className="input" dir="ltr" type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} required minLength={8} />
+            <span className="help-text">8 أحرف على الأقل.</span>
           </div>
           <div className="field">
             <label className="label required" htmlFor="conf-pass">تأكيد الجديدة</label>
@@ -112,19 +167,23 @@ export default function SettingsPage() {
       </div>
 
       <div className="card">
-        <div className="card__title">👤 الحساب</div>
+        <div className="card__title">
+          <IconUser size={17} />
+          الحساب
+        </div>
         <div className="kv"><span className="kv__k">الاسم</span><span className="bold">{user?.name}</span></div>
         <div className="kv"><span className="kv__k">الهاتف</span><span className="sw">{user?.phone}</span></div>
         <p className="tiny faint mt-1">
           لتثبيت التطبيق على هاتفك: افتح قائمة المتصفح واختر «إضافة إلى الشاشة الرئيسية».
         </p>
         <button type="button" className="btn btn--danger btn--block mt-1" onClick={() => void logout()}>
+          <IconLogout size={17} />
           تسجيل الخروج
         </button>
       </div>
 
       <p className="tiny faint" style={{ textAlign: "center" }}>
-        إدارة اللجان والطلاب — نسخة مجانية بالكامل (GitHub Pages + Firebase Spark)
+        <IconText size={13} /> إدارة اللجان والطلاب — نسخة مجانية بالكامل (GitHub Pages + Firebase Spark)
       </p>
     </AppLayout>
   );

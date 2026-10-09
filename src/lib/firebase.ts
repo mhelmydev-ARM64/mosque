@@ -22,8 +22,11 @@ if (firebaseReady) {
   authRef = getAuth(app);
   dbRef = getFirestore(app);
   if (import.meta.env.VITE_USE_EMULATORS === 'true') {
-    connectAuthEmulator(authRef, 'http://127.0.0.1:9099');
-    connectFirestoreEmulator(dbRef, '127.0.0.1', 8080);
+    const host = (import.meta.env.VITE_EMULATOR_HOST as string | undefined) ?? '127.0.0.1';
+    const authPort = Number(import.meta.env.VITE_AUTH_EMULATOR_PORT ?? 9099);
+    const fsPort = Number(import.meta.env.VITE_FIRESTORE_EMULATOR_PORT ?? 8080);
+    connectAuthEmulator(authRef, `http://${host}:${authPort}`);
+    connectFirestoreEmulator(dbRef, host, fsPort);
   }
 }
 
